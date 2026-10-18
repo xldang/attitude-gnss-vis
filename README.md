@@ -57,8 +57,6 @@ attitude-gnss-vis/
 ├─ samples/
 │  ├─ rnx/                  星历样本（BKG 公开广播星历）
 │  └─ traces/               轨迹样本（由 sim-trace 生成）
-├─ docs/
-│  └─ spec-original.md      原始需求规格（设计留档）
 └─ build/                   测试产物（已 gitignore）
 ```
 

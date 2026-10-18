@@ -65,8 +65,6 @@ attitude-gnss-vis/
 ├─ samples/
 │  ├─ rnx/                  Ephemeris sample (BKG public broadcast ephemeris)
 │  └─ traces/               Trajectory sample (produced by sim-trace)
-├─ docs/
-│  └─ spec-original.md      Original specification (kept for design provenance)
 └─ build/                   Test artifacts (gitignored)
 ```
 
