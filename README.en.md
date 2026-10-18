@@ -28,7 +28,7 @@ rendered as dual-perspective sky plots plus two linked time-series charts.
 ## Quick start
 
 ```bash
-git clone <this-repo> attitude-gnss-vis
+git clone https://github.com/xldang/attitude-gnss-vis.git
 cd attitude-gnss-vis
 # just double-click gnss_pdop_tool.html, or:
 xdg-open gnss_pdop_tool.html        # Linux

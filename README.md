@@ -21,7 +21,7 @@
 ## 快速开始
 
 ```bash
-git clone <this-repo> attitude-gnss-vis
+git clone https://github.com/xldang/attitude-gnss-vis.git
 cd attitude-gnss-vis
 # 直接双击 gnss_pdop_tool.html，或：
 start gnss_pdop_tool.html          # Windows
