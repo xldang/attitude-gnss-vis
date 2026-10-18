@@ -1374,6 +1374,63 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
         JSON.stringify(rerun) === JSON.stringify(back.means), rerun.join(','));
   }
 
+  console.log('\n=== 批量任务：星座 全选 / 全不选 ===');
+  {
+    /* 这两个按钮曾与单任务面板的同名按钮共用 id=bAll/bNone。getElementById 只认
+     * 第一个，于是批量这两个监听器绑到了**单任务**的按钮上：批量面板的按钮点了
+     * 完全没反应（用户报的现象），而点单任务的「全选」会顺手改掉批量的星座选择。 */
+    const sysSize = async () => await evalJS('GNSS_VIEW.batch.sys.size');
+    const chipsOn = async () => await evalJS(
+      'document.querySelectorAll("#bChips .chip.on").length');
+    const singleSize = async () => await evalJS('GNSS_VIEW.state.sys.size');
+
+    await evalJS('document.getElementById("bAllSys").click()');
+    await sleep(150);
+    chk('批量「全选」勾上全部 7 个星座', await sysSize() === 7, await sysSize() + '');
+    chk('批量「全选」重绘 chips 为全亮', await chipsOn() === 7, await chipsOn() + '');
+
+    await evalJS('document.getElementById("bNoneSys").click()');
+    await sleep(150);
+    chk('批量「全不选」清空星座', await sysSize() === 0, await sysSize() + '');
+    chk('批量「全不选」重绘 chips 为全灭', await chipsOn() === 0, await chipsOn() + '');
+    chk('一个星座都不选时禁用「开始批量仿真」', await evalJS(
+      'document.getElementById("bGo").disabled'));
+    chk('全不选不影响单任务的星座选择', await singleSize() === 7, await singleSize() + '');
+
+    // 点单任务的「全选」不得反过来动批量的选择 —— 这是同一个 id 造成的串味
+    await evalJS('document.getElementById("bAll").click()');
+    await sleep(250);
+    chk('点单任务「全选」不改变批量的星座选择', await sysSize() === 0, await sysSize() + '');
+    await evalJS('document.querySelector(\'input[name="bmode"][value="1"]\').click()');
+    await sleep(200);
+    chk('切到模式① 后批量星座选择仍是全不选', await sysSize() === 0, await sysSize() + '');
+
+    // 逐个点 chip 也要能恢复，并重新启用开始按钮
+    await evalJS('document.querySelectorAll("#bChips .chip")[0].click()');
+    await sleep(150);
+    chk('点单个 chip 可重新勾选', await sysSize() === 1, await sysSize() + '');
+    chk('只勾一个星座时「开始批量仿真」恢复可用', await evalJS(
+      '!document.getElementById("bGo").disabled'));
+    await evalJS('document.getElementById("bAllSys").click()');
+    await sleep(150);
+    chk('恢复为全选', await sysSize() === 7, await sysSize() + '');
+
+    // 单任务那一组（bAll / bNone / bG / bC）之前被批量抢走了绑定，一并验一遍
+    await evalJS('document.getElementById("bG").click()');
+    await sleep(300);
+    chk('单任务「仅 GPS」生效', await singleSize() === 1 && await evalJS(
+      'GNSS_VIEW.state.sys.has("G")'), await singleSize() + '');
+    await evalJS('document.getElementById("bC").click()');
+    await sleep(300);
+    chk('单任务「仅北斗」生效', await singleSize() === 1 && await evalJS(
+      'GNSS_VIEW.state.sys.has("C")'), await singleSize() + '');
+    chk('单任务「仅 GPS/仅北斗」同步了 #syslist 的勾选框', await evalJS(
+      'Array.from(document.querySelectorAll("#syslist input")).filter(i=>i.checked).length===1'));
+    await evalJS('document.getElementById("bAll").click()');
+    await sleep(300);
+    chk('单任务「全选」恢复 7 个星座', await singleSize() === 7, await singleSize() + '');
+  }
+
   console.log('\n=== 批量任务：单任务界面未被污染 ===');
   {
     chk('单任务状态仍完好', await evalJS(

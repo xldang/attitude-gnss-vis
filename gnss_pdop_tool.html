@@ -428,8 +428,8 @@ Yaw 画的是轨迹 CSV 里的**原样罗盘方位角**。它跨 ±180° / 0° �
           <label>星座</label>
           <div class="chips" id="bChips"></div>
           <div class="row" style="margin-top:8px">
-            <button id="bAll">全选</button>
-            <button id="bNone">全不选</button>
+            <button id="bAllSys">全选</button>
+            <button id="bNoneSys">全不选</button>
           </div>
           <label style="margin-top:11px">天线高度角截止（掩角）</label>
           <div style="display:flex;align-items:center;gap:10px">
@@ -2672,12 +2672,17 @@ Yaw 画的是轨迹 CSV 里的**原样罗盘方位角**。它跨 ±180° / 0° �
       el.addEventListener('click', () => {
         if (B.sys.has(sys)) B.sys.delete(sys); else B.sys.add(sys);
         buildChips();
+        refreshGo();          // 勾掉最后一个星座时必须禁用「开始批量仿真」
       });
       box.appendChild(el);
     });
   }
-  $('bAll').addEventListener('click', () => { B.sys = new Set(C.SYS_ORDER); buildChips(); });
-  $('bNone').addEventListener('click', () => { B.sys = new Set(); buildChips(); });
+  /* id 必须与单任务面板的 bAll / bNone 区分开。两者曾用同一个 id，而
+   * getElementById 只认第一个，于是这两个监听器绑到了**单任务**的按钮上：
+   * 批量面板的按钮点了没反应，点单任务的「全选」却会顺手改掉批量的星座选择。
+   * 现在批量用 bAllSys / bNoneSys，两个面板彻底各管各的。 */
+  $('bAllSys').addEventListener('click', () => { B.sys = new Set(C.SYS_ORDER); buildChips(); refreshGo(); });
+  $('bNoneSys').addEventListener('click', () => { B.sys = new Set(); buildChips(); refreshGo(); });
   $('bMask').addEventListener('input', e => {
     B.mask = parseFloat(e.target.value);
     $('bMaskv').textContent = B.mask.toFixed(1) + '°';

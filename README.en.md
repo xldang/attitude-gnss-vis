@@ -59,7 +59,7 @@ attitude-gnss-vis/
 │  └─ ref_pdop.py           Independent Python implementation (numerical baseline for the JS)
 ├─ test/
 │  ├─ test_core.js          Node core regression: JS vs Python, epoch by epoch
-│  ├─ e2e_browser.js        Browser end-to-end: drives real Chrome over CDP, 168 assertions
+│  ├─ e2e_browser.js        Browser end-to-end: drives real Chrome over CDP, 183 assertions
 │  ├─ fixtures/
 │  │  ├─ train_set.csv      Real receiver measurements (regression fixture)
 │  │  └─ sky-ref/           Measured sky-plot screenshots, one per epoch of train_set.csv

@@ -49,7 +49,7 @@ attitude-gnss-vis/
 │  └─ ref_pdop.py           Python 独立参考实现（JS 的数值基准）
 ├─ test/
 │  ├─ test_core.js          Node 核心回归：JS vs Python 逐历元比对
-│  ├─ e2e_browser.js        浏览器端到端：CDP 驱动真实 Chrome，168 项断言
+│  ├─ e2e_browser.js        浏览器端到端：CDP 驱动真实 Chrome，183 项断言
 │  ├─ fixtures/
 │  │  ├─ train_set.csv      真实接收机实测基准（回归固件）
 │  │  └─ sky-ref/           对应历元的实测星空图截图，与 train_set.csv 逐行一一对应

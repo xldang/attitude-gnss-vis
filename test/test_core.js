@@ -29,6 +29,28 @@ function chk(name, ok, detail) {
 }
 const near = (a, b, tol) => Math.abs(a - b) <= tol;
 
+/* ---------- 0. 文档结构 ----------
+ * 重复 id 是无效 HTML，而且**故障是静默的**：getElementById 只认第一个，
+ * 于是后写的监听器绑到了别人的按钮上，真按钮点了没反应。单任务面板的
+ * 「全选/全不选」和批量面板的同名按钮曾共用 bAll/bNone，正是这样坏的。 */
+console.log('=== 文档结构 ===');
+{
+  const seen = new Map();
+  for (const mm of html.matchAll(/\sid="([^"]+)"/g)) {
+    const id = mm[1];
+    if (!seen.has(id)) seen.set(id, []);
+    seen.get(id).push(html.slice(0, mm.index).split('\n').length);
+  }
+  const dup = [...seen.entries()].filter(([, v]) => v.length > 1);
+  chk('无重复 id（否则 getElementById 静默绑错按钮）', dup.length === 0,
+      dup.map(([k, v]) => k + '@' + v.join('/')).join(' '));
+
+  // 每个 $('x') 必须真有这个元素，且不只出现一次
+  const refs = [...html.matchAll(/\$\('([A-Za-z0-9_]+)'\)/g)].map(x => x[1]);
+  const missing = [...new Set(refs)].filter(id => !seen.has(id));
+  chk('$() 引用的元素都存在', missing.length === 0, missing.join(' '));
+}
+
 /* ---------- 1. 载入 ---------- */
 const rinex = C.parseRinex(fs.readFileSync(RNX, 'ascii'));
 const trace = C.parseTraceCSV(fs.readFileSync(CSV, 'utf8'));
