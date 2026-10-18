@@ -1,0 +1,2239 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GNSS 载体姿态敏感型卫星可见性与 PDOP 仿真工具</title>
+<style>
+:root{
+  --bg:#f6f7f9; --panel:#ffffff; --ink:#111827; --muted:#6b7280; --line:#e5e7eb;
+  --accent:#1d4ed8; --accent-soft:#eff4ff; --ok:#047857; --warn:#b45309; --err:#b91c1c;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{
+  background:var(--bg); color:var(--ink);
+  font:13.5px/1.5 system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;
+  padding:14px 16px 40px;
+}
+.wrap{max-width:1420px;margin:0 auto}
+h1{font-size:18px;font-weight:650;margin:0;letter-spacing:.2px;display:flex;align-items:center;gap:8px}
+h1 small{font-weight:400;color:var(--muted);font-size:12.5px}
+.layout{display:grid;grid-template-columns:326px minmax(0,1fr);gap:13px;align-items:start;margin-top:13px}
+@media(max-width:1160px){.layout{grid-template-columns:1fr}}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:11px 12px;
+  box-shadow:0 1px 2px rgba(16,24,40,.04)}
+.panel + .panel{margin-top:11px}
+h2{font-size:11.5px;font-weight:650;letter-spacing:.7px;text-transform:uppercase;color:var(--muted);
+  margin:0 0 8px;display:flex;align-items:center;gap:6px}
+label{display:block;font-size:12.5px;color:var(--muted);margin:0 0 3px;
+  display:flex;align-items:center;gap:5px}
+input[type=file]{width:100%;font-size:12px;padding:5px 7px;border:1px dashed #cbd5e1;
+  border-radius:6px;background:#fbfcfe;cursor:pointer}
+input[type=file]:hover{border-color:var(--accent);background:var(--accent-soft)}
+input[type=datetime-local]{width:100%;padding:5px 8px;border:1px solid var(--line);border-radius:6px;
+  font:12.5px var(--mono);background:#fff}
+.fname{font:11px var(--mono);color:var(--muted);margin-top:3px;word-break:break-all;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.row{display:flex;gap:7px;margin-top:9px}
+.row > *{flex:1}
+button{font:12.5px inherit;padding:6px 10px;border:1px solid var(--line);border-radius:6px;
+  background:#fff;cursor:pointer;color:var(--ink)}
+button:hover:not(:disabled){border-color:var(--accent);color:var(--accent);background:var(--accent-soft)}
+button:disabled{opacity:.45;cursor:not-allowed}
+button.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:560}
+button.primary:hover:not(:disabled){background:#1e40af;color:#fff}
+.syslist{display:flex;flex-direction:column;gap:0;margin-top:1px}
+.sysitem{display:flex;align-items:center;gap:7px;padding:3px 6px;border-radius:5px;cursor:pointer;
+  font-size:12.5px;user-select:none}
+.sysitem:hover{background:#f3f4f6}
+.sysitem input{accent-color:var(--accent);margin:0;cursor:pointer}
+.sysitem .tag{font:10.5px var(--mono);color:var(--muted);background:#f3f4f6;padding:0 5px;
+  border-radius:3px;min-width:28px;text-align:center}
+.sysitem .cnt{margin-left:auto;font:11px var(--mono);color:var(--muted)}
+.maskval{font:600 16px var(--mono);color:var(--accent);min-width:48px;text-align:right}
+input[type=range]{width:100%;accent-color:var(--accent);margin:6px 0 2px}
+.hint{font-size:11px;color:var(--muted);margin-top:6px;line-height:1.45}
+.kv{display:flex;justify-content:space-between;font:11.5px var(--mono);padding:1.5px 0}
+.kv span:first-child{color:var(--muted)}
+.chartbox{background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:10px 12px 7px;
+  box-shadow:0 1px 2px rgba(16,24,40,.04)}
+.chartbox + .chartbox{margin-top:11px}
+.charthead{display:flex;align-items:center;gap:8px;margin-bottom:7px;flex-wrap:wrap}
+.charthead .t{font-size:13px;font-weight:600}
+.charthead .st{font:11px var(--mono);color:var(--muted);margin-left:auto}
+canvas{display:block;width:100%;cursor:crosshair}
+
+/* ---------- 两张星空图：等大、左右并列 ---------- */
+.skyrow{display:grid;grid-template-columns:300px 300px;gap:16px;align-items:start;justify-content:center}
+@media(max-width:700px){.skyrow{grid-template-columns:300px}}
+.skyfig{margin:0;display:flex;flex-direction:column;align-items:center}
+.skyfig figcaption{font-size:11.5px;color:var(--muted);margin-bottom:5px;
+  display:flex;align-items:center;gap:5px}
+.skyfig figcaption b{color:var(--ink);font-weight:600}
+/* c3 = A 视角（地理，静）：圆心=天顶 90°，外圈=地平 0°
+   c4 = B 视角（载体/天线，动）：正上方=机首，圆心=天线法线，红虚线圈=掩角真判据 */
+canvas#c3,canvas#c4{width:300px;height:300px;flex:0 0 auto;cursor:default}
+.pstat{font:11px var(--mono);color:var(--muted);text-align:center;margin-top:5px;line-height:1.55}
+/* 卫星编号不再单独占一个框：紧贴两图下方排成一行文字流 */
+.skyfoot{display:flex;align-items:flex-start;gap:16px;margin-top:9px;
+  border-top:1px solid var(--line);padding-top:8px}
+.prnlist{flex:1;min-width:0;font:10.5px/1.75 var(--mono);color:var(--ink);word-break:break-all}
+.prnlist span{display:inline-block;margin-right:7px;white-space:nowrap}
+.prnlist span.dim{color:#9ca3af}
+.prnlist span.sys{font-weight:600;margin-right:9px}
+label.mini{display:flex;align-items:center;gap:5px;font-size:11.5px;color:var(--muted);cursor:pointer;
+  white-space:nowrap}
+
+/* ---------- 图② 姿态叠加勾选栏 ---------- */
+/* 放在画布**下方**而不是 charthead 里：head 已经有标题和状态文字，
+   再塞三个复选框会把标题挤变形。窄屏（单列布局）必须能换行。 */
+.ovlbar{display:flex;flex-wrap:wrap;align-items:center;gap:7px 12px;margin-top:7px;
+  border-top:1px solid var(--line);padding-top:7px}
+.ovt{font-size:11.5px;color:var(--muted)}
+/* 色块只是冗余编码之一：文字和线型同样能区分曲线，不能只靠颜色 */
+.ovlbar i{width:14px;height:0;border-top:2px solid var(--c);display:inline-block;flex:0 0 auto}
+.ovlbar label.mini input{margin:0;accent-color:var(--c,var(--accent))}
+#ovNote{font:11px var(--mono);color:var(--muted)}
+
+/* ---------- "?" 说明气泡：解释性文字不再占版面，悬停/聚焦才出现 ---------- */
+.q{flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;
+  width:15px;height:15px;border-radius:50%;border:1px solid #cbd5e1;color:var(--muted);
+  font:600 10px/1 var(--mono);cursor:help;user-select:none;position:relative;
+  transition:background .12s,border-color .12s,color .12s}
+.q:hover,.q:focus-visible{background:var(--accent);border-color:var(--accent);color:#fff;outline:none}
+.q::after{content:attr(data-t);position:absolute;left:50%;bottom:calc(100% + 8px);
+  transform:translateX(-50%) translateY(4px);width:max-content;max-width:290px;
+  background:#0f172a;color:#e2e8f0;font:12px/1.62 system-ui;font-weight:400;text-align:left;
+  padding:8px 10px;border-radius:7px;opacity:0;pointer-events:none;white-space:pre-line;
+  transition:opacity .12s,transform .12s;box-shadow:0 8px 24px rgba(15,23,42,.28);z-index:60}
+.q::before{content:'';position:absolute;left:50%;bottom:calc(100% + 3px);transform:translateX(-50%);
+  border:5px solid transparent;border-top-color:#0f172a;opacity:0;transition:opacity .12s;z-index:60}
+.q:hover::after,.q:focus-visible::after{opacity:1;transform:translateX(-50%) translateY(0)}
+.q:hover::before,.q:focus-visible::before{opacity:1}
+/* 页面顶部一排的图标（标题、面板标题、图注）必须**向下**展开：
+   向上会被视口上沿裁掉（实测 B 图的说明只剩后半段）。 */
+.q.d::after{bottom:auto;top:calc(100% + 8px);transform:translateX(-50%) translateY(-4px)}
+.q.d:hover::after,.q.d:focus-visible::after{transform:translateX(-50%) translateY(0)}
+.q.d::before{bottom:auto;top:calc(100% + 3px);border-top-color:transparent;
+  border-bottom-color:#0f172a}
+.q.d:hover::before,.q.d:focus-visible::before{opacity:1}
+/* 靠右边缘的图标改为右对齐，否则气泡会顶出容器 */
+.q.e::after{left:auto;right:0;transform:translateY(4px)}
+.q.e:hover::after,.q.e:focus-visible::after{transform:translateY(0)}
+.q.e::before{left:auto;right:8px;transform:none}
+
+.prog{height:5px;background:#eef1f5;border-radius:3px;overflow:hidden;margin-top:8px;display:none}
+.prog.on{display:block}
+.prog i{display:block;height:100%;width:0;background:var(--accent);transition:width .1s linear}
+#log{margin-top:9px;max-height:210px;overflow:auto;font:11px var(--mono);line-height:1.6;
+  background:#0f172a;color:#cbd5e1;border-radius:6px;padding:8px 10px;white-space:pre-wrap;word-break:break-word}
+#log .e{color:#fca5a5}#log .w{color:#fcd34d}#log .g{color:#86efac}#log .d{color:#64748b}
+table.tests{width:100%;border-collapse:collapse;font:11.5px var(--mono);margin-top:7px}
+table.tests td{padding:2.5px 5px;border-bottom:1px solid var(--line)}
+td.tg{width:30px}
+.g{color:var(--ok)}.r{color:var(--err)}.y{color:var(--warn)}
+.note{font-size:11.5px;color:var(--muted);line-height:1.55}
+code{font:11px var(--mono);background:#f3f4f6;padding:1px 4px;border-radius:3px}
+details.fold{margin-top:6px}
+details.fold > summary{font-size:11.5px;color:var(--accent);cursor:pointer;list-style:none;
+  display:inline-flex;align-items:center;gap:5px;user-select:none}
+details.fold > summary::-webkit-details-marker{display:none}
+details.fold > summary::before{content:'▸';font-size:10px;transition:transform .12s;display:inline-block}
+details.fold[open] > summary::before{transform:rotate(90deg)}
+details.fold > div{margin-top:6px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>GNSS 载体姿态敏感型卫星可见性与 PDOP 仿真工具
+    <small>RINEX 3.04 · 机体系天线面 · 分星座独立仿真</small>
+    <span class="q d" tabindex="0" data-t="把广播星历推算到轨迹的每个采样历元，旋转到载体坐标系（X-右 / Y-前 / Z-上 = 天线面法线），按高度角截止筛选后计算几何精度因子。
+全部计算在本页内完成：不发任何网络请求，数据不出浏览器。">?</span>
+  </h1>
+
+  <div class="layout">
+    <!-- ============ 左：配置面板 ============ -->
+    <div>
+      <div class="panel">
+        <h2>数据输入
+          <span class="q d" tabindex="0" data-t="星历取 RINEX 3.04 混合导航电文（G/E/C/J/I 走开普勒，R/S 走笛卡尔），按定宽字段逐字符扫描，不按空白切分。
+轨迹需含 Time / Longitude / Latitude / Height / Yaw / Pitch / Roll 七列（其余列原样保留）。">?</span>
+        </h2>
+        <label>星历文件（RINEX 3.04）</label>
+        <input type="file" id="fRnx" accept=".rnx,.RINEX,.txt,text/plain">
+        <div class="fname" id="nRnx">未选择 · 样本 <code>samples/rnx/*.rnx</code></div>
+
+        <label style="margin-top:9px">轨迹文件（CSV）</label>
+        <input type="file" id="fCsv" accept=".csv,text/csv">
+        <div class="fname" id="nCsv">未选择 · 样本 <code>samples/traces/*.csv</code></div>
+
+        <label style="margin-top:9px">起始时刻（UTC）
+          <span class="q" tabindex="0" data-t="轨迹的 Time 列是相对秒偏移，没有绝对日期，所以必须由这里给出零点。
+默认取星历的首条历元。内部统一换算到绝对 GPS 秒并处理闰秒（LEAP SECONDS）；北斗用 BDT 周数，需要额外 1356 周与 14 s 偏移。">?</span>
+        </label>
+        <input type="datetime-local" id="t0" step="1" value="2026-09-26T00:00:00">
+
+        <div class="row">
+          <button id="bRun" class="primary" disabled>运行仿真</button>
+          <button id="bSelf" disabled>自检</button>
+        </div>
+        <div class="prog" id="prog"><i></i></div>
+      </div>
+
+      <div class="panel">
+        <h2>星座（独立仿真）
+          <span class="q" tabindex="0" data-t="勾选集合直接决定 PDOP 的观测集合：每颗勾选的卫星都会进入 H 矩阵。
+只勾 GPS 或只勾北斗即为单星座独立仿真。">?</span>
+        </h2>
+        <div class="syslist" id="syslist"></div>
+        <div class="row">
+          <button id="bAll">全选</button>
+          <button id="bNone">全不选</button>
+          <button id="bG">仅 GPS</button>
+          <button id="bC">仅北斗</button>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>天线高度角截止
+          <span class="q" tabindex="0" data-t="掩角定义在**天线面板的法线**上，不是当地地平线：只有视线与法线的夹角小于 90°−掩角的卫星才算可视。
+这正是姿态敏感性的来源，也是右图（天线面视角）能画成正圆判据圈的原因。
+可见星数还要再满足一条：卫星在当地地平线以上，否则被地球本体挡住。">?</span>
+        </h2>
+        <div style="display:flex;align-items:center;gap:10px">
+          <input type="range" id="mask" min="0" max="45" step="0.5" value="15">
+          <div class="maskval" id="maskv">15.0°</div>
+        </div>
+        <div class="kv"><span>当前平均可视星</span><span id="kMean">—</span></div>
+        <div class="kv"><span>可视星范围</span><span id="kRange">—</span></div>
+        <div class="kv"><span>平均 PDOP</span><span id="kPdop">—</span></div>
+        <div class="kv"><span>PDOP &lt; 3 占比</span><span id="kGood">—</span></div>
+      </div>
+
+      <div class="panel">
+        <h2>导出
+          <span class="q" tabindex="0" data-t="导出内容 = 轨迹的原始全部列 + Visible_Count + PDOP，行数与轨迹一一对应，不加 HDOP/VDOP 等其他列。
+UTF-8 带 BOM，Excel 直接双击可读。">?</span>
+        </h2>
+        <button id="bExp" class="primary" style="width:100%" disabled>导出科研数据 CSV</button>
+      </div>
+
+      <div class="panel">
+        <h2>日志 / 自检</h2>
+        <div id="log" class="d">等待载入数据…</div>
+      </div>
+    </div>
+
+    <!-- ============ 右：联动图表 ============ -->
+    <!-- 面板按阅读顺序排列：① 星空图 → ② 星数曲线 → ③ PDOP 曲线。
+         注意画布 id 仍与历史一致（c1=星数、c2=PDOP、c3=星空），只是显示顺序变了；
+         这样 CHART_H / geomCache 的下标与 e2e 的悬停目标都不用动。 -->
+    <div>
+      <div class="chartbox" id="skybox">
+        <div class="charthead">
+          <span class="t">① 卫星星空图（随光标联动）</span>
+          <span class="q d e" tabindex="0" data-t="为什么需要**两张**图：观察者是带着姿态的，只画一张必然说不清。
+A 视角（地平坐标系）把这片天上"本来有什么"如实画出来，是绝对空间、静态的；
+B 视角（机体系）把卫星相对天线面板摆动的情况画出来，偏航时整圈旋转、俯仰时整体后移，直接暴露姿态对可见性的影响。
+只有把"绝对"和"相对"分开，掩角的判据才有地方落 —— 正投影的地理图上掩角圈画不出正圆。">?</span>
+          <span class="st" id="s3">—</span>
+        </div>
+        <div class="skyrow" id="skyrow">
+          <figure class="skyfig">
+            <figcaption>A · 地平坐标系<b>（静）</b>
+              <span class="q d" tabindex="0" data-t="行业标准的方位-高度角极坐标底图：同心圆由外向内为高度角 0° / 30° / 60°，圆心即天顶 90°；四条直径为正北-正南、东北-西南、正东-正西、东南-西北，正北画在正上方。
+卫星按地理方位角与高度角定位，彩色编号按星座着色。
+这里**不画掩角圈**：掩角定义在天线面法线上，画在正投影底图上既不是正圆、位置还随姿态乱跑。">?</span>
+            </figcaption>
+            <canvas id="c3" width="300" height="300"></canvas>
+          </figure>
+          <figure class="skyfig">
+            <figcaption>B · 载体 / 天线坐标系<b>（动）</b>
+              <span class="q d" tabindex="0" data-t="正上方**永远**是机首方向，圆心**永远**是天线面板的法线。同心圈是与法线的角距 30° / 60°，外圈是面板自身的地平线（夹角 90°）。
+红色虚线圈 = 掩角**真判据**，是一个正圆：偏航时整圈跟着转，俯仰时卫星整体后移。
+圈内**彩色编号**即真可见；圈外**红点**是被面板边缘挡住；圈内若出现**空心灰圈**，说明该星虽在面板朝向内，却已被地球本体挡住，仍收不到信号。">?</span>
+            </figcaption>
+            <canvas id="c4" width="300" height="300"></canvas>
+            <div class="pstat" id="s4">—</div>
+          </figure>
+        </div>
+        <div class="skyfoot">
+          <div class="prnlist" id="prn">把鼠标移到图 ② / 图 ③ 上，即可查看该历元的可视星编号。</div>
+          <label class="mini"><input type="checkbox" id="skyMasked">
+            显示被判为不可视的星（右图红点 / 左图灰点，不标号）</label>
+        </div>
+      </div>
+      <div class="chartbox">
+        <div class="charthead">
+          <span class="t">② 天线面可视卫星数量</span>
+          <span class="st" id="s1">—</span>
+        </div>
+        <canvas id="c1" height="230"></canvas>
+        <div class="ovlbar">
+          <span class="ovt">叠加姿态</span>
+          <label class="mini" style="--c:#0d9488"><input type="checkbox" id="ov_Yaw"><i></i>Yaw</label>
+          <label class="mini" style="--c:#9333ea"><input type="checkbox" id="ov_Pitch"><i></i>Pitch</label>
+          <label class="mini" style="--c:#db2777"><input type="checkbox" id="ov_Roll"><i></i>Roll</label>
+          <span class="q" tabindex="0" data-t="把姿态角曲线叠加到星数图上，用**右侧那条以度为单位的副轴**读数（左轴仍是颗数）。
+
+三条曲线**共用**同一条角度轴，按当前缩放窗口内各曲线范围的并集自动定程 —— 所以曲线的垂直高度就是真实角度大小，Roll 的 ±54° 和 Pitch 的 17° 可以直接比。
+
+Yaw 画的是轨迹 CSV 里的**原样罗盘方位角**。它跨 ±180° / 0° 时会出现一条竖直跳变，那是角度回绕，**不是**一次机动。
+
+星数与姿态之间**没有可以直接读出的因果关系**，这里只是同轴对比：星数还同时取决于星历几何、所在位置和掩角。曲线对得上只是相关性，结论要自己判断。">?</span>
+          <span class="st" id="ovNote"></span>
+        </div>
+      </div>
+      <div class="chartbox">
+        <div class="charthead">
+          <span class="t">③ 载体位姿下 PDOP</span>
+          <span class="st" id="s2">—</span>
+        </div>
+        <canvas id="c2" height="230"></canvas>
+      </div>
+      <div class="panel" style="margin-top:11px">
+        <h2>算法链与约定
+          <span class="q e" tabindex="0" data-t="概览：星历传播 → ECEF → 本地 ENU → 姿态 DCM → 机体系 LOS → 天线面高度角筛选 → 正规方程求逆 → PDOP。
+关键约定：姿态 DCM 取 Ry(−roll)·Rx(−pitch)·Rz(−yaw)（行 = 机体系各轴在 ENU 中的表示），掩角相对于天线面法线，Yaw 以正北为 0°、北偏西为正。
+点击下面的「展开完整链路」查看每一环的公式。">?</span>
+        </h2>
+        <details class="fold">
+          <summary>展开完整链路</summary>
+          <div class="note">
+            卫星 ECEF（开普勒 / 笛卡尔传播，含光行时 τ=ρ/c 与地球自转 Sagnac 改正）
+            → 载体 LLH 转 ECEF → 差矢量转本地 ENU → 姿态方向余弦阵
+            <code>C_enu^b = Ry(−roll)·Rx(−pitch)·Rz(−yaw)</code>
+            → 机体系 LOS → 天线面高度角 <code>E=asin(Z_b/ρ)</code> 过滤
+            → <code>G=(HᵀH)⁻¹</code>（增广高斯-约当 + 部分主元）→ <code>PDOP=√(G₁₁+G₂₂+G₃₃)</code>。<br>
+            掩角为“相对于天线面板面”的高度角；Yaw 以正北为 0°、北偏西为正；
+            Height 直接作为椭球高使用（生成脚本写的是平均海平面，偏差 &lt;10 m，对 PDOP 无影响）。
+            可视星 &lt; 4 时 PDOP 输出 NaN（曲线断开）。
+          </div>
+        </details>
+        <div id="tests"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ================================================================= -->
+<script id="gnss-core">
+/* ============================================================================
+ * gnss-core —— 算法核心。本段不访问任何 DOM，可被 Node 提取出来做数值回归。
+ * ==========================================================================*/
+(function (root) {
+  'use strict';
+
+  /* ---------- 常量 ---------- */
+  const WGS84_A   = 6378137.0;
+  const WGS84_F   = 1 / 298.257223563;
+  const WGS84_E2  = WGS84_F * (2 - WGS84_F);
+  const MU        = 3.986005e14;      // 地球引力常数 m^3/s^2
+  const OMEGA_E   = 7.2921151467e-5;  // 地球自转角速度 rad/s
+  const CLIGHT    = 299792458.0;
+  const D2R       = Math.PI / 180, R2D = 180 / Math.PI;
+  const GPS_EPOCH = Date.UTC(1980, 0, 6);      // 1980-01-06
+
+  const SYS_INFO = {
+    G: { name: 'GPS',        zh: 'GPS',        kepler: true  },
+    R: { name: 'GLONASS',    zh: 'GLONASS',    kepler: false },
+    E: { name: 'Galileo',    zh: 'Galileo',    kepler: true  },
+    C: { name: 'BeiDou',     zh: '北斗 BDS',   kepler: true  },
+    J: { name: 'QZSS',       zh: 'QZSS',       kepler: true  },
+    S: { name: 'SBAS',       zh: 'SBAS',       kepler: false },
+    I: { name: 'NavIC',      zh: 'NavIC',      kepler: true  }
+  };
+  const SYS_ORDER = ['G', 'C', 'R', 'E', 'J', 'S', 'I'];
+  // 注意：'S' 是字符串 'GREJCIS' 的子串 —— 必须用数组 membership，不能用字符串 includes
+  const KEP_SYS   = ['G', 'E', 'C', 'J', 'I'];
+  const NLINE     = { G: 8, J: 8, E: 8, C: 8, I: 8, R: 4, S: 4 };
+
+  /* ---------- 定宽字段读取 ---------- */
+  // RINEX 3.04：D19.12 字段，续行字段起点 0-based 下标 4，步长 19
+  function fld(line, i) {
+    const s = line.substr(i, 19).trim();
+    if (!s) return NaN;                 // 全空 = 未定义
+    const v = parseFloat(s.replace(/[Dd]/, 'E'));
+    return isFinite(v) ? v : NaN;
+  }
+  function fld1(line, i) {              // 第 1 行：历元是 0-based 4 处一个 19 字符整块
+    const s = line.substr(i, 19).trim();
+    if (!s) return null;
+    const p = s.split(/\s+/);
+    if (p.length < 6) return null;
+    const y = +p[0], mo = +p[1], d = +p[2], h = +p[3], mi = +p[4], se = +p[5];
+    if (!(y > 1900 && mo >= 1 && mo <= 12 && d >= 1 && d <= 31)) return null;
+    const days = Math.round((Date.UTC(y, mo - 1, d) - GPS_EPOCH) / 86400000);
+    const frac = p.length > 6 ? +p[6] : 0;
+    // 自 1980-01-06 起的秒数（UTC 基准），加小数秒
+    return { y, mo, d, h, mi, s: se, utcSec: days * 86400 + h * 3600 + mi * 60 + se + frac };
+  }
+
+  /* ---------- RINEX 解析 ---------- */
+  function parseRinex(text) {
+    const lines = text.split(/\r?\n/);
+    const sats = new Map();                 // "G01" -> { sys, prn, recs: [...] }
+    const header = { leap: null, version: null };
+    let firstEpoch = null;
+
+    // 头部：LEAP SECONDS 的标签在 61–80 列
+    for (let i = 0; i < Math.min(lines.length, 60); i++) {
+      const lab = lines[i].substr(60, 20).trim();
+      if (lab === 'LEAP SECONDS') header.leap = parseInt(lines[i].substr(0, 6), 10);
+      if (lab === 'RINEX VERSION / TYPE') header.version = lines[i].substr(0, 9).trim();
+    }
+    if (!isFinite(header.leap)) header.leap = 18;
+
+    let i = 0;
+    while (i < lines.length) {
+      const L = lines[i];
+      if (L.length < 23) { i++; continue; }
+      const sys = L[0], prn = L.substr(1, 2);
+      if (!SYS_INFO[sys] || !/^\d\d$/.test(prn) || L.substr(3, 1) !== ' ' ||
+          L.substr(4, 4) !== '2026' && !/^20\d\d$/.test(L.substr(4, 4))) { i++; continue; }
+
+      const n = NLINE[sys];
+      if (i + n > lines.length) break;
+      const b1 = lines[i];
+      const ep = fld1(b1, 4);
+      if (!ep) { i++; continue; }
+      if (!firstEpoch) firstEpoch = { y: ep.y, mo: ep.mo, d: ep.d, h: ep.h, mi: ep.mi, s: Math.floor(ep.s) };
+
+      const cont = k => lines[i + k];
+      let rec;
+      if (KEP_SYS.indexOf(sys) >= 0) {
+        // G/E/C/J/I 的 L1–L6 布局完全同构（实测核对）
+        rec = {
+          clk:  fld(b1, 23),
+          // BROADCAST ORBIT 1 = IODE | Crs | Δn | M0。Crs 在第 1 条续行的第 2 格，
+          // 从历元行的 IODE 槽位取会恒得 0，丢掉最大 ~150 m 的径向谐波改正。
+          IODE: fld(cont(1), 4), Crs: fld(cont(1), 23),
+          dn:   fld(cont(1), 42), M0:  fld(cont(1), 61),
+          Cuc:  fld(cont(2), 4),  e:   fld(cont(2), 23),
+          Cus:  fld(cont(2), 42), sqA: fld(cont(2), 61),
+          toe:  fld(cont(3), 4),  Cic: fld(cont(3), 23),
+          Om0:  fld(cont(3), 42), Cis: fld(cont(3), 61),
+          i0:   fld(cont(4), 4),  Crc: fld(cont(4), 23),
+          om:   fld(cont(4), 42), dOm: fld(cont(4), 61),
+          dI:   fld(cont(5), 4),
+          wk:   fld(cont(5), 42),
+          tocUtc: ep.utcSec
+        };
+        if (!isFinite(rec.dI)) rec.dI = 0;
+        // BDS 的 week 是 BDT 周号 -> GPS 周 = +1356
+        const w = isFinite(rec.wk) ? rec.wk : 0;
+        rec.toeGps = rec.toe + (w + (sys === 'C' ? 1356 : 0)) * 604800;
+        rec.tAbs   = rec.toeGps;                 // 选星用的绝对 GPS 秒
+        rec.kind   = 'kep';
+      } else {
+        // GLONASS / SBAS：X,Y,Z 在第 2/3/4 行；L1 下标 42 是 tk / t_rx
+        const rsv = fld(b1, 42);                 // GLONASS tk / SBAS t_rx（仅供日志核对）
+        rec = {
+          X: fld(cont(1), 4),  Xd: fld(cont(1), 23), Xdd: fld(cont(1), 42),
+          Y: fld(cont(2), 4),  Yd: fld(cont(2), 23), Ydd: fld(cont(2), 42),
+          Z: fld(cont(3), 4),  Zd: fld(cont(3), 23), Zdd: fld(cont(3), 42),
+          rsv: rsv,
+          // 历元按 UTC -> 加闰秒换算到 GPS 绝对秒
+          tAbs: ep.utcSec + header.leap,
+          kind: 'cart'
+        };
+        ['Xd','Yd','Zd','Xdd','Ydd','Zdd'].forEach(k => { if (!isFinite(rec[k])) rec[k] = 0; });
+      }
+
+      const key = sys + prn;
+      let s = sats.get(key);
+      if (!s) { s = { sys, prn, key, recs: [] }; sats.set(key, s); }
+      s.recs.push(rec);
+      i += n;
+    }
+
+    // 按 tAbs 排序并按 tAbs 去重（CONGO+IGS 合并产生的重复电文）
+    const list = [];
+    let dup = 0;
+    sats.forEach(s => {
+      s.recs.sort((a, b) => a.tAbs - b.tAbs);
+      const out = [];
+      for (const r of s.recs) {
+        if (out.length && Math.abs(out[out.length - 1].tAbs - r.tAbs) < 1e-6) { dup++; continue; }
+        out.push(r);
+      }
+      s.recs = out;
+      list.push(s);
+    });
+    list.sort((a, b) => a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
+
+    return { sats: list, header, firstEpoch, nRecords: list.reduce((a, s) => a + s.recs.length, 0), nDup: dup };
+  }
+
+  /* ---------- 选星：取 tAbs <= t 中最新的一条 ---------- */
+  function selectEph(sat, tAbs) {
+    const r = sat.recs;
+    if (!r.length) return null;
+    let lo = 0, hi = r.length - 1, ans = null;
+    while (lo <= hi) {
+      const m = (lo + hi) >> 1;
+      if (r[m].tAbs <= tAbs) { ans = r[m]; lo = m + 1; } else hi = m - 1;
+    }
+    return ans || r[0];
+  }
+
+  /* ---------- 星历传播（返回 ECEF，米） ---------- */
+  function propagate(sys, rec, t) {
+    if (rec.kind === 'cart') {
+      const tau = t - rec.tAbs;
+      return [
+        (rec.X + rec.Xd * tau + 0.5 * rec.Xdd * tau * tau) * 1000,
+        (rec.Y + rec.Yd * tau + 0.5 * rec.Ydd * tau * tau) * 1000,
+        (rec.Z + rec.Zd * tau + 0.5 * rec.Zdd * tau * tau) * 1000
+      ];
+    }
+    // 开普勒广播星历。本文件 C01–C42 一律走此路径：
+    // BDS 的 i0=3*n0-π/2「GEO 规则」对本文件有害（C01 会被推到 +47°~+62°），
+    // 所有星实测 |lat| <= |i0| 才是正确性的判据。
+    const a = rec.sqA * rec.sqA;
+    const tk = t - rec.toeGps;
+    const n  = Math.sqrt(MU / (a * a * a)) + rec.dn;
+    const M  = rec.M0 + n * tk;
+    let E = M;
+    for (let k = 0; k < 12; k++) {            // 不动点迭代（e <= ~0.1，12 次已收敛到 1e-12 rad）
+      E = M + rec.e * Math.sin(E);
+    }
+    const s2 = Math.sin(2 * E), c2 = Math.cos(2 * E);
+    // 幅角 u = ω + ν + δu。ν 是真近点角 —— 漏掉它卫星会被冻结在各自轨道上的固定一点，
+    // 星群相对地面完全不转动（实测 24 h 内 GPS 可视星数恒为 13、PRN 集合一字不差）。
+    const nu = Math.atan2(Math.sqrt(1 - rec.e * rec.e) * Math.sin(E),
+                          Math.cos(E) - rec.e);
+    const u = rec.om + nu + (rec.Cus * s2 + rec.Cuc * c2);
+    const dr = rec.Crs * s2 + rec.Crc * c2;
+    const di = rec.Cis * s2 + rec.Cic * c2;
+    const inc = rec.i0 + di + tk * rec.dI;
+    const R = a * (1 - rec.e * Math.cos(E)) + dr;
+    const Om = (rec.Om0 + (rec.dOm - OMEGA_E) * tk - OMEGA_E * rec.toe) % (2 * Math.PI);
+    const O  = Om < 0 ? Om + 2 * Math.PI : Om;
+    const uu = ((u % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
+    const cO = Math.cos(O), sO = Math.sin(O), cu = Math.cos(uu), su = Math.sin(uu), ci = Math.cos(inc);
+    return [
+      R * (cO * cu - sO * su * ci),
+      R * (sO * cu + cO * su * ci),
+      R * su * Math.sin(inc)
+    ];
+  }
+
+  /* ---------- 地理 / 姿态 ---------- */
+  function llhToEcef(latDeg, lonDeg, h) {
+    const la = latDeg * D2R, lo = lonDeg * D2R;
+    const sl = Math.sin(la), cl = Math.cos(la);
+    const N = WGS84_A / Math.sqrt(1 - WGS84_E2 * sl * sl);
+    // 水平分量用 cos(纬度)、垂直分量用 sin(纬度)：地纬是从赤道面量起的。
+    // 经度取 cos(lo)/sin(lo)——东经 121° 时 cos λ<0，故 x 为负。
+    return [(N + h) * cl * Math.cos(lo), (N + h) * cl * Math.sin(lo), (N * (1 - WGS84_E2) + h) * sl];
+  }
+
+  function matMul3(A, B) {
+    const C = new Array(9);
+    for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) {
+      C[i * 3 + j] = A[i * 3] * B[j] + A[i * 3 + 1] * B[3 + j] + A[i * 3 + 2] * B[6 + j];
+    }
+    return C;
+  }
+
+  /* 姿态 DCM：ENU -> Body。
+   * 机体定义 X-右 / Y-前 / Z-上（右手系：右 × 前 = 上 = 东 × 北）。
+   * Yaw 为西偏正的罗盘方位（正西 = +90）；Pitch 抬头为正；Roll 右滚（右翼下）为正。
+   *     C_enu^b = Ry(-roll) · Rx(-pitch) · Rz(-yaw)
+   * 行 = 机体系三个轴在 ENU 中的表示，故天线高度角取第 2 行（机体系 Z = 天线面法线）。
+   * mission-prompt.md 建议的 Rx(φ)Ry(θ)Rz(ψ) 是航空界 x-前/y-右/z-下 的排序，
+   * 与本题的 X-右/Y-前/Z-上 不兼容，故不采用。
+   * 刀刃校验（航向正北）：roll=+90 -> 机体系 Z 指向正东；pitch=+90 -> 机首朝正上方。 */
+  function dcmEnuToBody(yawDeg, pitchDeg, rollDeg) {
+    const y = yawDeg * D2R, t = pitchDeg * D2R, r = rollDeg * D2R;
+    const cy = Math.cos(y), sy = Math.sin(y);
+    const ct = Math.cos(t), st = Math.sin(t);
+    const cr = Math.cos(r), sr = Math.sin(r);
+    const Ry = [cr, 0, -sr, 0, 1, 0, sr, 0, cr];     // Ry(-roll)
+    const Rx = [1, 0, 0, 0, ct, st, 0, -st, ct];       // Rx(-pitch)
+    const Rz = [cy, sy, 0, -sy, cy, 0, 0, 0, 1];      // Rz(-yaw)
+    return matMul3(matMul3(Ry, Rx), Rz);
+  }
+
+  /* ---------- PDOP：累加 Q=HᵀH 后用增广矩阵求逆 ----------
+   * 必须用 [A|I] 增广形式。原地 (in-place) Gauss-Jordan 会静默退化成单位阵，
+   * 令 G11=G22=G33=1、PDOP 恒等于 √3 而不报任何错。 */
+  function pdopFromQ(Q) {
+    const A = new Array(8);
+    for (let i = 0; i < 4; i++) {
+      A[i] = [Q[i * 4], Q[i * 4 + 1], Q[i * 4 + 2], Q[i * 4 + 3],
+              i === 0 ? 1 : 0, i === 1 ? 1 : 0, i === 2 ? 1 : 0, i === 3 ? 1 : 0];
+    }
+    for (let k = 0; k < 4; k++) {
+      let pv = k, best = Math.abs(A[k][k]);
+      for (let r = k + 1; r < 4; r++) {
+        const v = Math.abs(A[r][k]);
+        if (v > best) { best = v; pv = r; }
+      }
+      if (best < 1e-12) return NaN;                  // 病态 -> NaN
+      const t = A[k]; A[k] = A[pv]; A[pv] = t;
+      const d = A[k][k];
+      for (let j = 0; j < 8; j++) A[k][j] /= d;
+      for (let r = 0; r < 4; r++) {
+        if (r === k) continue;
+        const f = A[r][k];
+        if (f === 0) continue;
+        for (let j = 0; j < 8; j++) A[r][j] -= f * A[k][j];
+      }
+    }
+    const v = A[0][4] + A[1][5] + A[2][6];
+    return v > 0 ? Math.sqrt(v) : NaN;
+  }
+
+  /* ---------- 时间 ---------- */
+  function utcToGpsSec(y, mo, d, h, mi, s, leap) {
+    const days = Math.round((Date.UTC(y, mo - 1, d) - GPS_EPOCH) / 86400000);
+    return days * 86400 + h * 3600 + mi * 60 + s + (leap == null ? 18 : leap);
+  }
+  function gpsSecToUTC(sec, leap) {
+    const t = (sec - (leap == null ? 18 : leap)) * 1000 + GPS_EPOCH;
+    const d = new Date(t);
+    return { y: d.getUTCFullYear(), mo: d.getUTCMonth() + 1, d: d.getUTCDate(),
+             h: d.getUTCHours(), mi: d.getUTCMinutes(), s: d.getUTCSeconds() };
+  }
+
+  /* ---------- 轨迹 CSV ---------- */
+  const NEED = ['Time', 'Longitude', 'Latitude', 'Height', 'Yaw', 'Pitch', 'Roll'];
+  function parseTraceCSV(text) {
+    if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+    const raw = text.split(/\r?\n/);
+    while (raw.length && raw[raw.length - 1].trim() === '') raw.pop();
+    if (raw.length < 2) throw new Error('轨迹 CSV 至少需要表头和一行数据');
+    const head = raw[0].split(',').map(s => s.trim().replace(/^﻿/, ''));
+    const idx = {};
+    head.forEach((h, i) => { idx[h.toLowerCase()] = i; });
+    const missing = NEED.filter(n => !(n.toLowerCase() in idx));
+    if (missing.length) throw new Error('轨迹 CSV 缺少必需列: ' + missing.join(', '));
+
+    const rows = raw.slice(1).filter(l => l.trim() !== '');
+    const n = rows.length;
+    const col = name => new Float64Array(n);
+    const out = {};
+    NEED.forEach(k => { out[k] = col(k); });
+    const extra = head.filter(h => NEED.indexOf(h) < 0);
+
+    let bad = 0;
+    for (let r = 0; r < n; r++) {
+      const c = rows[r].split(',');
+      NEED.forEach(k => {
+        const v = parseFloat(c[idx[k.toLowerCase()]]);
+        if (!isFinite(v)) bad++;
+        out[k][r] = v;
+      });
+    }
+    let nonMono = 0;
+    for (let r = 1; r < n; r++) if (!(out.Time[r] > out.Time[r - 1])) nonMono++;
+    return { head, extra, rows, n, data: out, badCells: bad, nonMono };
+  }
+
+  /* ---------- LOS 缓存 ----------
+   * 一次性算完所有历元 × 所有卫星的机体系 LOS 单位矢量，之后拖动掩角/切星座
+   * 只需重新做阈值比较与 4×4 正规方程累加 —— 这就是滑块能秒级响应的原因。
+   * 高度角阈值不需要 asin：单位矢量的 z 分量本身就是 sin(仰角)。 */
+
+  /* 卫星 ECEF 位置 -> 站心东/北/天 (ENU) 视线向量，未归一化（模 = 斜距 ρ）。
+   *
+   * 两处容易写错的地方，本文件都踩过：
+   *  1) Sagnac 改正只能取**信号飞行时间** ρ/c。误用绝对 GPS 时刻 t 时，
+   *     ωₑ·t mod 2π 是一个随日期跳变的常数（本文件为 259.55°），
+   *     仰角不受影响（绕 Z 轴旋转）但方位整体偏掉 259.55°。
+   *  2) ECEF→ENU 要**同时**做经度与纬度两次旋转。只做经度的话 N、U 不是当地的
+   *     北和天：以站点纬度 31.24° 计，天顶方向的视线会被判成仰角 31.2°。
+   * 抽成独立函数是为了让自检能拿合成的天顶/正北/正东向量直接单测这段旋转。 */
+  function enuFromEcef(dx, dy, dz, lonDeg, latDeg) {
+    const rho = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    if (!(rho > 0)) return null;
+    const w = OMEGA_E * (rho / CLIGHT);        // Sagnac：信号飞行时间，不是绝对时刻
+    const cw = Math.cos(w), sw = Math.sin(w);
+    const x1 = dx * cw + dy * sw, y1 = -dx * sw + dy * cw;
+    const sl = Math.sin(lonDeg * D2R), cl = Math.cos(lonDeg * D2R);
+    const sf = Math.sin(latDeg * D2R), cf = Math.cos(latDeg * D2R);
+    return {
+      rho: rho,
+      E: -x1 * sl + y1 * cl,
+      N: -x1 * sf * cl - y1 * sf * sl + dz * cf,
+      U:  x1 * cf * cl + y1 * cf * sl + dz * sf
+    };
+  }
+
+  function buildLOSChunk(rinex, trace, t0Gps, i0, i1, los, satSys, nsat) {
+    const d = trace.data;
+    const S = rinex.sats;
+    for (let e = i0; e < i1; e++) {
+      const t = t0Gps + d.Time[e];
+      const rx = llhToEcef(d.Latitude[e], d.Longitude[e], d.Height[e]);
+      const C = dcmEnuToBody(d.Yaw[e], d.Pitch[e], d.Roll[e]);
+      const base = e * nsat * 3;
+      for (let s = 0; s < S.length; s++) {
+        const rec = selectEph(S[s], t);
+        if (!rec) continue;
+        const p = propagate(S[s].sys, rec, t);
+        const v = enuFromEcef(p[0] - rx[0], p[1] - rx[1], p[2] - rx[2],
+                              d.Longitude[e], d.Latitude[e]);
+        if (!v) continue;
+        const E = v.E, N = v.N, U = v.U, rho = v.rho;
+        const o = base + s * 3;
+        los[o]     = (C[0] * E + C[1] * N + C[2] * U) / rho;
+        los[o + 1] = (C[3] * E + C[4] * N + C[5] * U) / rho;
+        los[o + 2] = (C[6] * E + C[7] * N + C[8] * U) / rho;
+      }
+    }
+  }
+
+  /* 逐历元预取「ENU 天顶方向在机体系中的表示」，即 DCM 的第 2 行 K[2],K[5],K[8]。
+   * 有了它，机体系 LOS 的**地理高度角**不用再三角函数就能拿到：
+   *   up = K[2]·bx + K[5]·by + K[8]·bz = sin(仰角)
+   * 因为 LOS 是单位矢量，ENU 分量的模也是 1，up 就是 sin(el)。
+   * 预取一次（5000 × 3 个 double）比每次重解现算 DCM 便宜得多。 */
+  function attUpRow(trace, nEp) {
+    const out = new Float64Array(nEp * 3), d = trace.data;
+    for (let e = 0; e < nEp; e++) {
+      const K = dcmEnuToBody(d.Yaw[e], d.Pitch[e], d.Roll[e]);
+      out[e * 3] = K[2]; out[e * 3 + 1] = K[5]; out[e * 3 + 2] = K[8];
+    }
+    return out;
+  }
+
+  /* 由缓存重解：只依赖掩角与星座集合
+   *
+   * 可见判据是**两个**，缺一不可：
+   *   1) z_b > sin(掩角)  —— 相对**天线面法线**的高度角截止（姿态敏感的来源）
+   *   2) up  > 0           —— 相对**当地地平线**，即地球本体的遮挡
+   * 第 2 条以前漏了：轨迹 roll 到 ±54°，天线法线最低只到仰角 35.6°，
+   * 于是掩角 0°/15° 时分别有 5.6% / 0.47% 的"可视星"其实位于地平线以下，
+   * 在星空图上就是跑到外圈之外的点。地球挡着的时候天线朝哪都没用。 */
+  function solveAll(los, nsat, nEp, satIdx, maskDeg, counts, pdops, upRow) {
+    const thr = Math.sin(maskDeg * D2R);
+    const Q = new Float64Array(16);
+    for (let e = 0; e < nEp; e++) {
+      Q.fill(0);
+      const base = e * nsat * 3;
+      const u0 = upRow ? upRow[e * 3] : 0,
+            u1 = upRow ? upRow[e * 3 + 1] : 0,
+            u2 = upRow ? upRow[e * 3 + 2] : 0;
+      let n = 0;
+      for (let k = 0; k < satIdx.length; k++) {
+        const s = satIdx[k], o = base + s * 3, z = los[o + 2];
+        if (z <= thr) continue;
+        const x = los[o], y = los[o + 1];
+        if (upRow && u0 * x + u1 * y + u2 * z <= 0) continue;   // 地平线以下：地球遮挡
+        n++;
+        Q[0]  += 1;    Q[1]  += x;   Q[2]  += y;   Q[3]  += z;
+        Q[4]  += x;    Q[5]  += x*x; Q[6]  += x*y; Q[7]  += x*z;
+        Q[8]  += y;    Q[9]  += y*x; Q[10] += y*y; Q[11] += y*z;
+        Q[12] += z;    Q[13] += z*x; Q[14] += z*y; Q[15] += z*z;
+      }
+      counts[e] = n;
+      pdops[e] = (n < 4) ? NaN : pdopFromQ(Q);
+    }
+  }
+
+  /* ---------- 自检 ---------- */
+  function selfTest(rinex, trace, los, counts, pdops, upRow, satIdx) {
+    const T = [];
+    const add = (name, pass, detail) => T.push({ name, pass: !!pass, detail: detail || '' });
+
+    // 1. 求逆正确性（专防原地法退化成单位阵）
+    (function () {
+      const A = [[4, 1, 2, .5], [1, 3, .2, 1], [2, .2, 5, .7], [.5, 1, .7, 2]];
+      const B = matInv4(A);
+      let err = 0;
+      for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) {
+        let s = 0; for (let k = 0; k < 4; k++) s += A[i][k] * B[k][j];
+        err = Math.max(err, Math.abs(s - (i === j ? 1 : 0)));
+      }
+      add('4×4 增广求逆 A·A⁻¹=I', err < 1e-9, 'max|AA⁻¹−I| = ' + err.toExponential(2));
+    })();
+
+    // 2. DCM 正交性与刀刃测试
+    (function () {
+      const C = dcmEnuToBody(37, 12, -22);
+      let dn = 0; for (let i = 0; i < 3; i++) dn = Math.max(dn, Math.abs(Math.hypot(C[i*3],C[i*3+1],C[i*3+2]) - 1));
+      for (let i = 0; i < 3; i++) for (let j = i + 1; j < 3; j++) {
+        let s = 0; for (let k = 0; k < 3; k++) s += C[i*3+k] * C[j*3+k];
+        dn = Math.max(dn, Math.abs(s));
+      }
+      add('DCM 正交性', dn < 1e-12, 'max 偏差 ' + dn.toExponential(2));
+      const K = dcmEnuToBody(0, 0, 90);
+      const Z = [K[6], K[7], K[8]];
+      const e1 = Math.hypot(Z[0] - 1, Z[1], Z[2]);
+      add('刀刃测试 roll=+90 -> 机体系 Z 指东', e1 < 1e-12, 'bodyZ=' + Z.map(v => v.toFixed(3)).join(','));
+      const P = dcmEnuToBody(0, 90, 0);
+      const e2 = Math.hypot(P[3], P[4], P[5] - 1);
+      add('刀刃测试 pitch=+90 -> 机首朝上', e2 < 1e-12, 'bodyY=' + [P[3],P[4],P[5]].map(v => v.toFixed(3)).join(','));
+      const Y = dcmEnuToBody(90, 0, 0);
+      const e3 = Math.hypot(Y[3] + 1, Y[4], Y[5]);
+      add('yaw=+90(正西) -> 机首指西', e3 < 1e-12, 'bodyY=' + [Y[3],Y[4],Y[5]].map(v => v.toFixed(3)).join(','));
+    })();
+
+    if (!rinex) { add('（需先载入星历）', false, ''); return T; }
+
+    // 3. 星座识别：KEP_SYS 必须用数组 membership
+    const cnt = {};
+    rinex.sats.forEach(s => cnt[s.sys] = (cnt[s.sys] || 0) + 1);
+    const sysOk = rinex.sats.every(s => !!SYS_INFO[s.sys]);
+    add('星座前缀识别', sysOk, Object.keys(cnt).map(k => k + ':' + cnt[k]).join('  '));
+
+    // 4. 各系统轨道半径标称性 + BDS |lat| <= |i0|
+    const t = rinex.firstEpoch ? utcToGpsSec(rinex.firstEpoch.y, rinex.firstEpoch.mo, rinex.firstEpoch.d,
+                     rinex.firstEpoch.h, rinex.firstEpoch.mi, rinex.firstEpoch.s, rinex.header.leap) + 2500
+                : 0;
+    let rmin = Infinity, rmax = 0, latBad = [], nominal = [], frozen = [];
+    // 标称轨道半径带 (km)。Galileo 真实轨道偏心率较大 (E18: a=27977 km, e=0.168)，
+    // QZSS 近地点/远地点可跨 39000~45500 km，故带宽留足。
+    const bands = { G: [24500, 29000], C: [27000, 43500], E: [24500, 31500],
+                    J: [30000, 45600], I: [41000, 44000], R: [23000, 29000], S: [41000, 44000] };
+    const latOf = (p) => Math.abs(Math.asin(Math.max(-1, Math.min(1,
+      p[2] / Math.hypot(p[0], p[1], p[2])))) * R2D);
+    const latOfSigned = (p) => Math.asin(Math.max(-1, Math.min(1,
+      p[2] / Math.hypot(p[0], p[1], p[2])))) * R2D;
+    rinex.sats.forEach(s => {
+      const rec = selectEph(s, t); if (!rec) return;
+      const p = propagate(s.sys, rec, t);
+      const r = Math.hypot(p[0], p[1], p[2]) / 1000;
+      rmin = Math.min(rmin, r); rmax = Math.max(rmax, r);
+      const b = bands[s.sys];
+      if (b && (r < b[0] || r > b[1])) nominal.push(s.key + '=' + r.toFixed(0) + 'km');
+      if (rec.kind === 'kep' && isFinite(rec.i0)) {
+        const lat = latOf(p);
+        if (lat > Math.abs(rec.i0 * R2D) + 0.05) latBad.push(s.key);
+        // 纬度必须随时间摆动。传播器若漏掉真近点角 ν，卫星被冻结在轨道上固定
+        // 一点，z = R·sin(u₀)·sin(i) 里的 u₀ 成了常数，Δlat 恒为 0。
+        // 这是唯一能抓住该 bug 的量纲 —— 上面的 |lat| ≤ |i0| 在冻结态下照样通过。
+        // 判据用「±6 h 内**有符号**纬度的极差 ≥ 0.5·max|i₀|」：单点 Δlat 对近赤道
+        // 轨道（BDS GEO i₀≈5°、QZSS 准静止 i₀≈0.1°）摆幅太小会误报；而 ±6 h 已覆盖
+        // MEO 的整个升交点周期，真实轨道的极差稳定趋近 2|i₀|。用有符号纬度是因为
+        // 绝对值的极差最多只有 |i₀|，永远达不到 0.5·max|i₀|（GEO 各星历 i₀ 摆动大）。
+        const kep = s.recs.filter(r => r.kind === 'kep' && isFinite(r.i0));
+        if (!kep.length) return;
+        const band = Math.max.apply(null, kep.map(r => Math.abs(r.i0 * R2D)));
+        let lo = Infinity, hi = -Infinity;
+        for (let j = -24; j <= 24; j++) {
+          const L = latOfSigned(propagate(s.sys, rec, t + j * 900));
+          if (L < lo) lo = L; if (L > hi) hi = L;
+        }
+        if (hi - lo < 0.5 * band) frozen.push(s.key);
+      }
+    });
+    add('轨道半径在标称带内', nominal.length === 0,
+        'r = ' + rmin.toFixed(0) + ' ~ ' + rmax.toFixed(0) + ' km' + (nominal.length ? '  异常: ' + nominal.slice(0,6).join(' ') : ''));
+    add('所有开普勒星 |lat| ≤ |i0|', latBad.length === 0,
+        latBad.length ? '违反: ' + latBad.slice(0, 8).join(' ') + '（提示：误用 BDS GEO 规则即为此症状）' : '全部通过');
+    add('开普勒星纬度在 ±6h 内摆满 i0 的一半', frozen.length === 0,
+        frozen.length ? '冻结: ' + frozen.slice(0, 8).join(' ') + '（提示：传播器漏了真近点角 ν）'
+                      : rinex.sats.filter(s => s.recs.some(r => r.kind === 'kep')).length + ' 颗全部在动');
+
+    // 相邻电文自洽性：同一颗星相邻两条广播星历推到同一时刻，位置必须一致。
+    // 这是最强的判据 —— 真近点角 ν、toe/周号、Crs 三类取错都会在这里放大成
+    // 几十米到几千公里的偏差（实测漏 ν 时中位数 1031 m、<50 m 的占比只有 41.8%；
+    //  修正后中位数 0.8 m、占比 96.7%）。
+    //
+    // 阈值不能用「全部 < 50 m」：近赤道 GEO 的密切轨道条件数极差，本文件里
+    // BDS C01–C04 的广播 i0 在相邻电文之间要摆动 ~0.7°（近赤道轨道被日月摄动
+    // 扰动的真实反映），两条电文描述的轨道平面本身就不一样，横轨向差 90~940 km。
+    // 这是**输入数据的性质、不是传播器的错** —— 同样的代码在 GPS / Galileo /
+    // BDS MEO·IGSO 上残差只有 2~4 m。故判据定在稳健统计量上：
+    //   中位数 < 50 m  且  ≥90% 的配对 < 50 m
+    // 修正后 2.9 m / 94.4%，漏 ν 时 8380 m / 2.4%，两侧都留足裕度。
+    (function () {
+      const ds = [];
+      rinex.sats.forEach(s => {
+        const recs = s.recs;
+        for (let k = 1; k < recs.length; k++) {
+          const a = recs[k - 1], b = recs[k];
+          if (a.kind !== 'kep' || b.kind !== 'kep') continue;
+          if (b.tAbs - a.tAbs > 7200) continue;            // 只比真正相邻的电文
+          const tt = b.tAbs + 60;                          // 刚过第二条 toe，误差最小
+          const p1 = propagate(s.sys, a, tt), p2 = propagate(s.sys, b, tt);
+          ds.push(Math.hypot(p1[0] - p2[0], p1[1] - p2[1], p1[2] - p2[2]));
+        }
+      });
+      ds.sort((x, y) => x - y);
+      const n = ds.length, med = n ? ds[n >> 1] : Infinity;
+      const within = n ? ds.filter(d => d < 50).length : 0;
+      const pct = n ? 100 * within / n : 0;
+      add('相邻电文自洽：中位 < 50 m 且 ≥90% 配对 < 50 m', med < 50 && pct >= 90,
+          n + ' 对，中位 ' + med.toFixed(2) + ' m，<50 m 占 ' + pct.toFixed(1) +
+          '%，p99 ' + (n ? ds[Math.min(n - 1, Math.floor(0.99 * n))].toFixed(0) : '-') +
+          ' m，最大 ' + (n ? ds[n - 1].toFixed(0) : '-') + ' m' +
+          '（尾部集中在近赤道 GEO：广播 i0 相邻电文摆 ~0.7°，属输入数据性质）');
+    })();
+
+    // ENU 合成判据：拿天顶/正北/正东三个构造出来的 ECEF 向量走一遍 enuFromEcef，
+    // 天顶必须得仰角 90°、正北仰角 0° 方位 0°、正东仰角 0° 方位 90°。
+    // 这条同时锁死两类错误：只做经度旋转、漏掉纬度旋转（天顶被判成 31.2°），
+    // 以及 Sagnac 误用绝对时刻（方位整体偏 259.55°）。
+    // 向量长度取真实斜距量级 ρ = 2.0e7 m —— 单位长度会让 ωₑ·ρ/c ≈ 1e-13 rad，
+    // Sagnac 项被抹平、判据对 Bug 3 完全失效。
+    (function () {
+      const LON = 121.479216, LAT = 31.236807, RHO = 2.0e7;
+      const S0 = Math.sin(LON * D2R), C0 = Math.cos(LON * D2R);
+      const S1 = Math.sin(LAT * D2R), C1 = Math.cos(LAT * D2R);
+      // 当地 ENU 三轴各自单位长在 ECEF 下的表示，乘以斜距
+      const axes = {
+        U: [C1 * C0 * RHO, C1 * S0 * RHO, S1 * RHO],
+        N: [-S1 * C0 * RHO, -S1 * S0 * RHO, C1 * RHO],
+        E: [-S0 * RHO, C0 * RHO, 0]
+      };
+      const want = { U: { el: 90 }, N: { el: 0, az: 0 }, E: { el: 0, az: 90 } };
+      let worstEl = 0, worstAz = 0, who = '';
+      for (const k of ['U', 'N', 'E']) {
+        const a = axes[k], v = enuFromEcef(a[0], a[1], a[2], LON, LAT);
+        const el = Math.asin(Math.max(-1, Math.min(1, v.U / v.rho))) * R2D;
+        const az = Math.atan2(v.E, v.N) * R2D;
+        if (Math.abs(el - want[k].el) > worstEl) { worstEl = Math.abs(el - want[k].el); who = k + ' 仰角'; }
+        if (want[k].az !== undefined && Math.abs(az - want[k].az) > worstAz) {
+          worstAz = Math.abs(az - want[k].az); who = k + ' 方位';
+        }
+      }
+      // 正确实现下 Sagnac 改正只有 ωₑ·ρ/c = 4.9e-6 rad = 2.8e-4°，容差取 0.01°
+      const TOL = 0.01;
+      add('ENU 旋转 + Sagnac：天顶/正北/正东合成向量', worstEl < TOL && worstAz < TOL,
+          '最大仰角误差 ' + worstEl.toExponential(2) + '°，最大方位误差 ' +
+          worstAz.toExponential(2) + '°' +
+          (worstEl >= TOL || worstAz >= TOL ? '（' + who + '；漏纬度旋转 → 天顶 31.2°，Sagnac 误用 t → 方位偏 259.55°）' : ''));
+    })();
+
+    if (trace) {
+      add('轨迹列完整 / 无 NaN', trace.badCells === 0,
+          trace.n + ' 行，' + trace.head.length + ' 列' + (trace.badCells ? '，NaN 单元 ' + trace.badCells : ''));
+      add('Time 严格递增', trace.nonMono === 0,
+          trace.n > 1 ? (trace.data.Time[trace.n-1] - trace.data.Time[0]).toFixed(1) + ' s 跨度' : '');
+
+      // 载体 LLH->ECEF 自检：地心距必须落在 [a(1-e²), a] 之间。
+      // 曾两次在这里出错（水平分量误用 sin(纬度)、cos(纬度) 当 cos(经度)），
+      // 症状都是 LOS 方向整体偏掉、PDOP 均值偏大 9%，而星历侧各项仍全部"通过"。
+      const rx = llhToEcef(trace.data.Latitude[0], trace.data.Longitude[0], trace.data.Height[0]);
+      const gre = Math.hypot(rx[0], rx[1], rx[2]);
+      add('载体 ECEF 地心距 ∈ [6335, 6379] km', gre > 6.335e6 && gre < 6.379e6,
+          (gre / 1000).toFixed(1) + ' km  ' + rx.map(v => (v / 1000).toFixed(1)).join(', ') +
+          '（东西经符号错则此项与 PDOP 同时异常）');
+    }
+
+    if (counts && pdops) {
+      // 5. 单调性：掩角 0 的星数 >= 掩角 45
+      const c0 = solveTally(los, trace.n, rinex.sats.length, 0, ['G','R','E','C','J','S','I'], upRow);
+      const c45 = solveTally(los, trace.n, rinex.sats.length, 45, ['G','R','E','C','J','S','I'], upRow);
+      add('掩角单调（0° 星数 ≥ 45° 星数）', c0.mean >= c45.mean,
+          '0°: ' + c0.mean.toFixed(1) + ' 星  45°: ' + c45.mean.toFixed(1) + ' 星');
+      // 5b. 地球遮挡：counts[e] 必须**恰好**等于满足两条判据（法线掩角 + 地平线以上）
+      // 的星数。这条能抓住"solveAll 忘了传 upRow / 忘了加 up>0"这类回归 ——
+      // 那种情况下 counts 会偏大，正好多出地平线以下那些星。
+      let cntMism = 0, belowAll = 0, sampleBad = -1;
+      if (upRow) {
+        const thr = Math.sin(15 * D2R);
+        // 只统计**已勾选**的星座，否则 counts 是筛选后的、而 want 会算上全部星
+        const list = satIdx || [];
+        for (let e = 0; e < trace.n; e++) {
+          const u0 = upRow[e * 3], u1 = upRow[e * 3 + 1], u2 = upRow[e * 3 + 2];
+          const base = e * rinex.sats.length * 3;
+          let want = 0, below = 0;
+          for (let k = 0; k < list.length; k++) {
+            const o = base + list[k] * 3;
+            if (los[o + 2] <= thr) continue;
+            if (u0 * los[o] + u1 * los[o + 1] + u2 * los[o + 2] <= 0) { below++; continue; }
+            want++;
+          }
+          belowAll += below;
+          if (want !== counts[e]) { cntMism++; if (sampleBad < 0) sampleBad = e; }
+        }
+      }
+      add('星数 = 同时满足「法线掩角」与「地平线以上」', !!upRow && cntMism === 0,
+          upRow ? '不一致 ' + cntMism + ' 处' + (sampleBad >= 0 ? '（首例历元 ' + sampleBad + '）' : '') +
+                  '；掩角 15° 下被地球挡住、本应排除的共 ' + belowAll + ' 颗次'
+                : '未提供 upRow，无法校验');
+      // 6. 单位矢量范数（必须按 3 步长取，不能跨星取样）
+      let worst = 0;
+      for (let i = 0; i + 2 < los.length; i += 3) {
+        const n = Math.hypot(los[i], los[i + 1], los[i + 2]);
+        if (n < 0.5) continue;                 // 未填充槽位（无星历时保持 0）
+        worst = Math.max(worst, Math.abs(n - 1));
+      }
+      add('LOS 单位矢量范数 = 1', worst < 2e-3, '抽样最大偏差 ' + worst.toExponential(2));
+      // 7. NaN 一致性
+      let mism = 0;
+      for (let e = 0; e < trace.n; e++) {
+        if (counts[e] < 4 && !isNaN(pdops[e])) mism++;
+        if (counts[e] >= 4 && isNaN(pdops[e])) mism++;
+      }
+      add('可见星 < 4 <=> PDOP 为 NaN', mism === 0, '不一致 ' + mism + ' 处');
+      const f = [];
+      for (let e = 0; e < trace.n; e++) if (isFinite(pdops[e])) f.push(pdops[e]);
+      f.sort((a, b) => a - b);
+      if (f.length) {
+        const mean = f.reduce((a, b) => a + b, 0) / f.length;
+        add('PDOP 量级合理 (0 < PDOP < 50)', f[0] > 0 && f[f.length-1] < 50,
+            'min ' + f[0].toFixed(3) + ' / 中位 ' + f[Math.floor(f.length/2)].toFixed(3) +
+            ' / 均值 ' + mean.toFixed(3) + ' / max ' + f[f.length-1].toFixed(3));
+      }
+    }
+    return T;
+  }
+
+  function solveTally(los, nEp, nsat, mask, sysList, upRow) {
+    const thr = Math.sin(mask * D2R);
+    let tot = 0;
+    for (let e = 0; e < nEp; e++) {
+      const base = e * nsat * 3;
+      const u0 = upRow ? upRow[e * 3] : 0,
+            u1 = upRow ? upRow[e * 3 + 1] : 0,
+            u2 = upRow ? upRow[e * 3 + 2] : 0;
+      let n = 0;
+      for (let s = 0; s < nsat; s++) {
+        const o = base + s * 3, z = los[o + 2];
+        if (z <= thr) continue;
+        if (upRow && u0 * los[o] + u1 * los[o + 1] + u2 * z <= 0) continue;
+        n++;
+      }
+      tot += n;
+    }
+    return { mean: tot / nEp };
+  }
+
+  // 通用 4×4 求逆（增广 + 部分主元）
+  function matInv4(M) {
+    const A = [];
+    for (let i = 0; i < 4; i++) A.push([M[i][0], M[i][1], M[i][2], M[i][3],
+                                      i === 0 ? 1 : 0, i === 1 ? 1 : 0, i === 2 ? 1 : 0, i === 3 ? 1 : 0]);
+    for (let k = 0; k < 4; k++) {
+      let pv = k, best = Math.abs(A[k][k]);
+      for (let r = k + 1; r < 4; r++) if (Math.abs(A[r][k]) > best) { best = Math.abs(A[r][k]); pv = r; }
+      if (best < 1e-14) return null;
+      const t = A[k]; A[k] = A[pv]; A[pv] = t;
+      const d = A[k][k];
+      for (let j = 0; j < 8; j++) A[k][j] /= d;
+      for (let r = 0; r < 4; r++) {
+        if (r === k) continue;
+        const f = A[r][k]; if (f === 0) continue;
+        for (let j = 0; j < 8; j++) A[r][j] -= f * A[k][j];
+      }
+    }
+    return [A[0].slice(4), A[1].slice(4), A[2].slice(4), A[3].slice(4)];
+  }
+
+  root.GNSSCore = {
+    WGS84_A, WGS84_E2, MU, OMEGA_E, CLIGHT, D2R, R2D, GPS_EPOCH,
+    SYS_INFO, SYS_ORDER, KEP_SYS, NLINE,
+    parseRinex, parseTraceCSV, selectEph, propagate, llhToEcef, matMul3, enuFromEcef,
+    dcmEnuToBody, pdopFromQ, buildLOSChunk, attUpRow, solveAll, selfTest, matInv4,
+    utcToGpsSec, gpsSecToUTC
+  };
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+</script>
+
+<!-- ================================================================= -->
+<script>
+/* ============================================================================
+ * UI 层：文件载入、分块计算调度、Canvas 联动图表、导出
+ * ==========================================================================*/
+(function () {
+  'use strict';
+  const C = globalThis.GNSSCore;
+  const $ = id => document.getElementById(id);
+
+  const S = {
+    rinex: null, trace: null,
+    los: null, nSat: 0, satSys: null,
+    counts: null, pdops: null,
+    t0Gps: 0, mask: 15,
+    sys: new Set(C.SYS_ORDER),
+    busy: false
+  };
+
+  const CH = { xa: 0, xb: 1, hover: -1 };
+
+  /* 姿态叠加（图② 星数图）：右侧加一条以度为单位的**共享**副轴。
+   * 键名必须与 trace.data 里的列名完全一致，取数就是 S.trace.data[key][i]。
+   * 颜色之外再加一套线型做冗余编码 —— 黑白打印和色觉障碍下仍能分辨，
+   * 只靠颜色区分在这个场景下不够（用户要把图拿去做汇报）。 */
+  const OVL_DEF = {
+    Yaw:   { color: '#0d9488', dash: [] },
+    Pitch: { color: '#9333ea', dash: [5, 3] },
+    Roll:  { color: '#db2777', dash: [7, 3, 2, 3] }
+  };
+  const OVL_KEYS = Object.keys(OVL_DEF);
+  const OVL_AXIS_W = 40;      // 右轴留白（放刻度数字）
+  let ovl = [];               // 当前勾选的键，顺序固定为 OVL_KEYS 的顺序
+  function ovlSync() {
+    // **原地改**而不是重新赋值：ovl 被 GNSS_VIEW 导出给 e2e 自动化，
+    // 重新赋值会让外部拿到的那份永远停在初始的空数组。
+    ovl.length = 0;
+    for (const k of OVL_KEYS) if ($('ov_' + k).checked) ovl.push(k);
+    drawAll();
+    ovlNote();
+  }
+  function ovlNote() {
+    if (!ovl.length || !S.trace) { $('ovNote').textContent = ''; return; }
+    const i0 = Math.max(0, Math.floor(CH.xa)), i1 = Math.min(S.trace.n - 1, Math.ceil(CH.xb));
+    const rs = ovlRange(ovl, i0, i1);
+    if (!rs.length) { $('ovNote').textContent = ''; return; }
+    // 写的是**轴上真正画出来的**上下界（含留白），不是原始并集 —— 否则
+    // 标签说 -94…54 而轴实际到 -103…64，用户对不上读数。
+    const ax = ovlAxis(rs);
+    $('ovNote').textContent = '右轴 ' + Math.round(ax[0]) + '…' + Math.round(ax[1]) + '°' +
+      '（' + ovl.map((k, i) => k + ' ' + Math.round(rs[i][0]) + '…' + Math.round(rs[i][1])).join(' / ') + '）';
+  }
+  /* 右轴上下界（含 6% 留白）。drawChart 与 ovlNote **必须**共用这一份实现：
+   * 各自算一遍的话，留白系数一改，状态文字就会和画出来的轴对不上。 */
+  function ovlAxis(rs) {
+    let lo = Infinity, hi = -Infinity;
+    for (const [a, b] of rs) { if (a < lo) lo = a; if (b > hi) hi = b; }
+    if (!isFinite(lo)) return [0, 1];
+    if (hi - lo < 1e-9) hi = lo + 1;
+    const pado = (hi - lo) * 0.06;
+    lo = Math.floor(lo - pado); hi = Math.ceil(hi + pado);
+    return hi <= lo ? [lo, lo + 1] : [lo, hi];
+  }
+  /* 已勾选曲线在 [i0,i1] 上的并集量程。取数必须用**同一个视窗**，
+   * 否则右轴和曲线会错位（这正是缩放后最容易被忽略的一类 bug）。 */
+  function ovlRange(keys, i0, i1) {
+    const out = [];
+    for (const k of keys) {
+      const arr = S.trace.data[k];
+      let lo = Infinity, hi = -Infinity;
+      for (let i = i0; i <= i1; i++) {
+        const v = arr[i]; if (!isFinite(v)) continue;
+        if (v < lo) lo = v; if (v > hi) hi = v;
+      }
+      if (lo === Infinity) continue;
+      if (hi - lo < 1e-9) { lo -= 0.5; hi += 0.5; }
+      out.push([lo, hi]);
+    }
+    return out;
+  }
+
+  /* ---------------- 日志 ---------------- */
+  function log(msg, cls) {
+    const el = $('log');
+    if (el.dataset.once !== '1') { el.textContent = ''; el.dataset.once = '1'; }
+    const s = document.createElement('span');
+    s.className = cls || '';
+    s.textContent = msg + '\n';
+    el.appendChild(s);
+    el.scrollTop = el.scrollHeight;
+  }
+
+  /* ---------------- 星座开关 ---------------- */
+  function buildSysList() {
+    const box = $('syslist');
+    box.innerHTML = '';
+    C.SYS_ORDER.forEach(s => {
+      const info = C.SYS_INFO[s];
+      const lab = document.createElement('label');
+      lab.className = 'sysitem';
+      lab.innerHTML = '<input type="checkbox" checked data-sys="' + s + '">' +
+                     '<span class="tag">' + s + '</span><span>' + info.zh + '</span>' +
+                     '<span class="cnt" id="c_' + s + '">—</span>';
+      lab.querySelector('input').addEventListener('change', ev => {
+        if (ev.target.checked) S.sys.add(s); else S.sys.delete(s);
+        recompute();
+      });
+      box.appendChild(lab);
+    });
+  }
+  function setSystems(list) {
+    S.sys = new Set(list);
+    document.querySelectorAll('#syslist input').forEach(i => { i.checked = S.sys.has(i.dataset.sys); });
+    recompute();
+  }
+
+  /* ---------------- 文件载入 ---------------- */
+  function readFile(input, cb) {
+    const f = input.files && input.files[0];
+    if (!f) return;
+    const rd = new FileReader();
+    rd.onload = () => cb(rd.result, f);
+    rd.onerror = () => log('读取失败: ' + f.name, 'e');
+    rd.readAsText(f);
+  }
+
+  $('fRnx').addEventListener('change', ev => {
+    readFile(ev.target, (txt, f) => {
+      const t0 = performance.now();
+      try {
+        const r = C.parseRinex(txt);
+        if (!r.sats.length) throw new Error('未解析到任何导航电文');
+        S.rinex = r;
+        $('nRnx').textContent = f.name + ' · ' + (f.size / 1048576).toFixed(1) + ' MB';
+        const h = r.firstEpoch;
+        $('t0').value = h.y + '-' + pad(h.mo) + '-' + pad(h.d) + 'T' + pad(h.h) + ':' + pad(h.mi) + ':' + pad(h.s);
+        log('星历 ' + f.name, 'g');
+        log('  版本 ' + r.header.version + '，闰秒 ' + r.header.leap);
+        log('  首条历元 ' + h.y + '-' + pad(h.mo) + '-' + pad(h.d) + ' ' + pad(h.h) + ':' + pad(h.mi) + ':' + pad(h.s) + ' UTC');
+        log('  ' + r.sats.length + ' 颗星 / ' + r.nRecords + ' 条电文，去重 ' + r.nDup + ' 条，解析耗时 ' +
+            (performance.now() - t0).toFixed(0) + ' ms');
+        const by = {};
+        r.sats.forEach(s => by[s.sys] = (by[s.sys] || 0) + 1);
+        log('  ' + Object.keys(by).sort().map(k => C.SYS_INFO[k].zh + ' ' + k + by[k]).join('  '), 'd');
+        buildSysList();
+        $('bRun').disabled = !(S.rinex && S.trace);
+      } catch (e) {
+        log('星历解析失败: ' + e.message, 'e');
+        $('nRnx').textContent = f.name + ' · 解析失败';
+      }
+    });
+  });
+
+  $('fCsv').addEventListener('change', ev => {
+    readFile(ev.target, (txt, f) => {
+      try {
+        const tr = C.parseTraceCSV(txt);
+        S.trace = tr;
+        $('nCsv').textContent = f.name + ' · ' + tr.n + ' 行 × ' + tr.head.length + ' 列';
+        log('轨迹 ' + f.name, 'g');
+        log('  ' + tr.n + ' 行，表头: ' + tr.head.join(' | '));
+        const span = tr.n > 1 ? tr.data.Time[tr.n - 1] - tr.data.Time[0] : 0;
+        log('  Time 跨度 ' + span.toFixed(1) + ' s（首值 ' + tr.data.Time[0].toFixed(1) +
+            '，无绝对日期，需用左侧起始 UTC 锚定）', 'd');
+        if (tr.badCells) log('  警告: ' + tr.badCells + ' 个单元无法解析为数值', 'w');
+        if (tr.nonMono) log('  警告: Time 有 ' + tr.nonMono + ' 处非严格递增', 'w');
+        $('bRun').disabled = !(S.rinex && S.trace);
+      } catch (e) {
+        log('轨迹解析失败: ' + e.message, 'e');
+        $('nCsv').textContent = f.name + ' · 解析失败';
+      }
+    });
+  });
+
+  function pad(v) { return v < 10 ? '0' + v : '' + v; }
+
+  /* ---------------- 主计算（分块，让出主线程） ---------------- */
+  $('bRun').addEventListener('click', run);
+
+  function run() {
+    if (!S.rinex || !S.trace || S.busy) return;
+    // datetime-local 在秒为 0 时会把值规范化成 "YYYY-MM-DDTHH:MM"（丢掉 ":00"），
+    // 所以不能直接按下标取 6 个字段，必须按缺省补齐。
+    const p = ($('t0').value || '').split(/[-T:]/).map(Number);
+    const v = [p[0], p[1], p[2], p[3] || 0, p[4] || 0, p[5] || 0];
+    if (p.length < 5 || v.some(isNaN)) { log('起始 UTC 无效', 'e'); return; }
+    const leap = S.rinex.header.leap;
+    S.t0Gps = C.utcToGpsSec(v[0], v[1], v[2], v[3], v[4], v[5], leap);
+
+    S.busy = true;
+    $('bRun').disabled = true;
+    const nEp = S.trace.n;
+    S.nSat = S.rinex.sats.length;
+    S.satSys = S.rinex.sats.map(s => s.sys);
+    S.los = new Float32Array(nEp * S.nSat * 3);
+    S.upRow = C.attUpRow(S.trace, nEp);   // 逐历元的「天顶在机体系中的方向」，供地球遮挡判据用
+    S.counts = new Int32Array(nEp);
+    S.pdops = new Float64Array(nEp);
+
+    const bar = $('prog');
+    bar.classList.add('on');
+    const fill = bar.querySelector('i');
+    log('开始推算 ' + nEp + ' 历元 × ' + S.nSat + ' 星 = ' + (nEp * S.nSat).toLocaleString() + ' 个 LOS …', 'd');
+
+    const t0 = performance.now();
+    const CHUNK = 250;
+    let i = 0;
+    function step() {
+      const j = Math.min(nEp, i + CHUNK);
+      C.buildLOSChunk(S.rinex, S.trace, S.t0Gps, i, j, S.los, S.satSys, S.nSat);
+      i = j;
+      fill.style.width = (100 * i / nEp).toFixed(1) + '%';
+      if (i < nEp) { requestAnimationFrame(step); return; }
+      bar.classList.remove('on'); fill.style.width = '0';
+      CH.xa = 0; CH.xb = S.trace.n - 1; CH.hover = -1;   // 换数据必须复位视窗，否则沿用上次的缩放
+      SKY.ep = 0;
+      recompute();
+      log('LOS 推算完成，耗时 ' + (performance.now() - t0).toFixed(0) + ' ms（缓存 ' +
+          (S.los.byteLength / 1048576).toFixed(1) + ' MB）', 'g');
+      S.busy = false;
+      $('bRun').disabled = false;
+      $('bExp').disabled = false;
+      $('bSelf').disabled = false;
+    }
+    requestAnimationFrame(step);
+  }
+
+  /* ---------------- 掩角 / 星座变化后的快速重解 ---------------- */
+  $('skyMasked').addEventListener('change', () => { if (S.counts) drawAll(); });
+  function recompute() {
+    if (!S.los || !S.trace) return;
+    const t0 = performance.now();
+    const idx = [];
+    for (let s = 0; s < S.nSat; s++) if (S.sys.has(S.satSys[s])) idx.push(s);
+    C.solveAll(S.los, S.nSat, S.trace.n, idx, S.mask, S.counts, S.pdops, S.upRow);
+    S.lastMs = performance.now() - t0;
+    S.lastN = idx.length;
+    updateStats();
+    drawAll();
+  }
+
+  $('mask').addEventListener('input', e => {
+    S.mask = parseFloat(e.target.value);
+    $('maskv').textContent = S.mask.toFixed(1) + '°';
+    recompute();
+  });
+  $('bAll').addEventListener('click', () => setSystems(C.SYS_ORDER));
+  $('bNone').addEventListener('click', () => setSystems([]));
+  $('bG').addEventListener('click', () => setSystems(['G']));
+  $('bC').addEventListener('click', () => setSystems(['C']));
+
+  // 姿态叠加勾选：只重绘，不重解 —— 叠加不改变任何数值结果。
+  OVL_KEYS.forEach(k => $('ov_' + k).addEventListener('change', ovlSync));
+
+  $('bSelf').addEventListener('click', () => {
+    const idx = [];
+    for (let s = 0; s < S.nSat; s++) if (S.sys.has(S.satSys[s])) idx.push(s);
+    const T = C.selfTest(S.rinex, S.trace, S.los, S.counts, S.pdops, S.upRow, idx);
+    const bad = T.filter(t => !t.pass).length;
+    log('自检: ' + (T.length - bad) + '/' + T.length + ' 通过', bad ? 'e' : 'g');
+    T.forEach(t => log('  [' + (t.pass ? '通过' : '失败') + '] ' + t.name + (t.detail ? '  ' + t.detail : ''),
+                       t.pass ? 'g' : 'e'));
+    const box = $('tests');
+    box.innerHTML = '<table class="tests">' + T.map(t =>
+      '<tr><td class="tg">' + (t.pass ? '<span class="g">✓</span>' : '<span class="r">✗</span>') +
+      '</td><td>' + t.name + '</td><td style="color:#6b7280">' + t.detail + '</td></tr>').join('') + '</table>';
+  });
+
+  /* ---------------- 统计 ---------------- */
+  function updateStats() {
+    const n = S.trace ? S.trace.n : 0;
+    if (!n) return;
+    let mn = Infinity, mx = -Infinity, tot = 0;
+    for (let e = 0; e < n; e++) {
+      const c = S.counts[e];
+      if (c < mn) mn = c; if (c > mx) mx = c; tot += c;
+      if (S.satSys) { /* per-system counts */ }
+    }
+    $('kMean').textContent = (tot / n).toFixed(1);
+    $('kRange').textContent = mn + ' ~ ' + mx;
+
+    let ps = 0, good = 0, pmin = Infinity, pmax = -Infinity;
+    for (let e = 0; e < n; e++) {
+      const p = S.pdops[e];
+      if (isFinite(p)) { ps += p; good += (p < 3 ? 1 : 0); if (p < pmin) pmin = p; if (p > pmax) pmax = p; }
+    }
+    $('kPdop').textContent = ps ? (ps / n).toFixed(3) : '—';
+    $('kGood').textContent = ps ? (100 * good / n).toFixed(1) + ' %' : '—';
+
+    const sysName = Array.from(S.sys).sort().map(s => C.SYS_INFO[s].name).join(' + ') || '（无）';
+    $('s1').textContent = n + ' 历元 · ' + sysName + ' · 平均 ' + (tot / n).toFixed(1) + ' 颗';
+    $('s2').textContent = isFinite(pmin)
+      ? 'PDOP ' + pmin.toFixed(2) + ' ~ ' + pmax.toFixed(2) + ' · 重解 ' + (S.lastMs || 0).toFixed(0) + ' ms'
+      : 'PDOP 全部不可解（可视星 < 4）';
+
+    // 每星座当前可视星 —— 必须跟随光标所在的历元（SKY.ep），不是恒取第 0 个历元
+    if (S.los && S.upRow) {
+      const e = Math.max(0, Math.min(n - 1, SKY.ep | 0)), thr = Math.sin(S.mask * C.D2R);
+      const u0 = S.upRow[e * 3], u1 = S.upRow[e * 3 + 1], u2 = S.upRow[e * 3 + 2];
+      const per = {};
+      for (let s = 0; s < S.nSat; s++) {
+        const sys = S.satSys[s];
+        per[sys] = per[sys] || 0;
+        const o = e * S.nSat * 3 + s * 3, z = S.los[o + 2];
+        if (z <= thr) continue;
+        if (u0 * S.los[o] + u1 * S.los[o + 1] + u2 * z <= 0) continue;   // 地平线以下
+        per[sys]++;
+      }
+      C.SYS_ORDER.forEach(s => {
+        const el = $('c_' + s);
+        if (el) el.textContent = per[s] ? per[s] + ' 颗' : '—';
+      });
+    }
+  }
+
+  /* =========================================================================
+   * Canvas 折线图：devicePixelRatio + min/max 包络抽稀 + 联动十字光标 + 缩放平移
+   * =======================================================================*/
+  const PAD = { l: 58, r: 16, t: 10, b: 26 };
+  const MIN_SPAN = 10;    // 最小视窗宽度（历元数）
+
+  /* 图表的**逻辑高度**必须在第一次绘制之前取一次并存下来，绝不能每次绘制都回去读
+   * canvas 的 height 属性。原因：`canvas.height = H` 会把 H **写回 height 属性**，
+   * 于是下一次读到的是上一次算出来的 H*dpr，再乘一次 dpr 就翻倍：
+   *   230 -> 460 -> 920 -> 1840 -> ...（元素同时被撑到几十万像素高，页面被撑垮）
+   * 这个反馈环会让"每帧重分配后备存储"变成指数级，悬停时表现为图表崩溃式闪烁。
+   * 尺寸真变了时靠下面的 width/height 比较来重建后备存储，两者互不干扰。 */
+  const CHART_H = { c1: +$('c1').getAttribute('height') || 230,
+                    c2: +$('c2').getAttribute('height') || 230,
+                    c3: +$('c3').getAttribute('height') || 360,
+                    c4: +$('c4').getAttribute('height') || 150 };
+
+  function setup(canvas) {
+    const dpr = window.devicePixelRatio || 1;
+    const w = canvas.clientWidth || 600, h = CHART_H[canvas.id];
+    const W = Math.round(w * dpr), H = Math.round(h * dpr);
+    // 只有尺寸真的变了才重设：给 canvas.width/height 赋值会清空画布并重新分配后备存储。
+    if (canvas.width !== W || canvas.height !== H) { canvas.width = W; canvas.height = H; }
+    canvas.style.height = h + 'px';
+    const g = canvas.getContext('2d');
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    return { g, w, h };
+  }
+
+  function niceTicks(lo, hi, n) {
+    if (!(hi > lo)) { hi = lo + 1; }
+    const raw = (hi - lo) / n;
+    const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+    const norm = raw / mag;
+    const step = (norm < 1.5 ? 1 : norm < 3 ? 2 : norm < 7 ? 5 : 10) * mag;
+    const out = [];
+    for (let v = Math.ceil(lo / step) * step; v <= hi + step * 1e-9; v += step) out.push(v);
+    return out;
+  }
+
+  function fmtT(s) {
+    const neg = s < 0, a = Math.abs(Math.round(s));
+    const hh = Math.floor(a / 3600), mm = Math.floor(a % 3600 / 60), ss = a % 60;
+    return (neg ? '-' : '') + (hh ? hh + ':' + pad(mm) : '') + (hh ? pad(ss) : mm + ':' + pad(ss));
+  }
+
+  /* 抽稀：每像素列取 (首, 最小, 最大, 末) —— 保住尖峰又不锯齿。
+   * 分界必须按「样本个数」cnt = i1-i0+1 切，而不是按跨度 i1-i0：
+   * 后者会让最后一列停在 i1-1，i1 永远进不了任何列。全景时只差 1/5000 看不出来，
+   * 缩小到 10 个历元时就差 1/11，曲线右端明显缩进绘图区。 */
+  function envelope(arr, i0, i1, ncol) {
+    const cols = new Array(ncol), cnt = i1 - i0 + 1;
+    for (let c = 0; c < ncol; c++) {
+      const a = i0 + Math.floor(cnt * c / ncol);
+      const b = Math.max(a + 1, i0 + Math.floor(cnt * (c + 1) / ncol));
+      let mn = Infinity, mx = -Infinity;
+      for (let i = a; i < b && i <= i1; i++) {
+        const v = arr[i];
+        if (!isFinite(v)) continue;
+        if (v < mn) mn = v; if (v > mx) mx = v;
+      }
+      cols[c] = (mn === Infinity) ? null : [a, mn, mx, b - 1];
+    }
+    return cols;
+  }
+
+  function drawChart(canvas, arr, opt) {
+    const { g, w, h } = setup(canvas);
+    g.clearRect(0, 0, w, h);
+    g.fillStyle = '#fff';
+    g.fillRect(0, 0, w, h);
+    if (!S.trace || !S.trace.n) {
+      g.fillStyle = '#9ca3af'; g.font = '13px system-ui'; g.textAlign = 'center';
+      g.fillText('载入星历与轨迹后点击「运行仿真」', w / 2, h / 2);
+      return;
+    }
+    const n = S.trace.n;
+    let xa = Math.max(0, Math.floor(CH.xa)), xb = Math.min(n - 1, Math.ceil(CH.xb));
+    if (xb <= xa) { xa = 0; xb = n - 1; }   // 视窗为空/越界 -> 退回全景，避免画出"一条线"的假象
+    const i0 = xa, i1 = xb;
+    // 勾选了姿态叠加时，右侧让出一条以度为单位的副轴；只动 PR，不动 CHART_H。
+    const ovl = (opt.overlays || []).filter(k => S.trace.data[k]);
+    const PL = PAD.l, PR = w - PAD.r - (ovl.length ? OVL_AXIS_W : 0), PT = PAD.t, PB = h - PAD.b;
+    const pw = PR - PL, ph = PB - PT;
+    if (pw <= 0 || ph <= 0) return;
+
+    // y 范围
+    let lo = Infinity, hi = -Infinity;
+    const step0 = Math.max(1, Math.floor((i1 - i0) / pw));
+    for (let i = i0; i <= i1; i += step0) {
+      const v = arr[i]; if (!isFinite(v)) continue;
+      if (v < lo) lo = v; if (v > hi) hi = v;
+    }
+    for (let i = i0; i <= i1; i++) {
+      const v = arr[i]; if (!isFinite(v)) continue;
+      if (v < lo) lo = v; if (v > hi) hi = v;
+    }
+    if (lo === Infinity) { lo = 0; hi = 1; }
+    if (opt.integer) { lo = Math.floor(lo); hi = Math.ceil(hi); }
+    if (hi - lo < 1e-9) { hi = lo + 1; }
+    const padY = (hi - lo) * 0.10;
+    lo -= padY; hi += padY;
+    if (opt.integer) { lo = Math.floor(lo); hi = Math.ceil(hi); if (hi <= lo) hi = lo + 1; }
+
+    const X = i => PL + (i - i0) / Math.max(1, i1 - i0) * pw;
+    const Y = v => PB - (v - lo) / (hi - lo) * ph;
+
+    /* 姿态副轴：各勾选曲线**共用**一条角度轴，量程取它们在当前视窗内的并集。
+     * 并集而非各自归一化 —— 曲线的垂直高度必须就是真实角度，否则
+     * "Roll 摆幅是 Pitch 的 6 倍"这种一眼就该看出的结论会被抹平。 */
+    let olo = 0, ohi = 1, OY = null, oticks = [];
+    if (ovl.length) {
+      const rs = ovlRange(ovl, i0, i1);
+      [olo, ohi] = ovlAxis(rs);
+      OY = v => PB - (v - olo) / (ohi - olo) * ph;
+      oticks = niceTicks(olo, ohi, 6);
+    }
+
+    // 网格 + 轴
+    g.font = '11px ui-monospace,Menlo,Consolas,monospace';
+    g.strokeStyle = '#eef1f5'; g.lineWidth = 1;
+    g.fillStyle = '#6b7280'; g.textAlign = 'right'; g.textBaseline = 'middle';
+    // y 轴刻度标签的小数位数必须由「刻度间隔」决定，不能由值域跨度决定：
+    // 值域窄但步长更细时（如 49.9~51.1 步长 0.2），按跨度取 0 位会印出 50,50,50,50,51。
+    const yt = niceTicks(lo, hi, 5);
+    const ystep = yt.length > 1 ? yt[1] - yt[0] : (hi - lo);
+    const ydec = opt.integer ? 0
+      : Math.max(0, Math.min(6, Math.ceil(-Math.log10(Math.abs(ystep) || 1) - 1e-9)));
+    yt.forEach(v => {
+      const y = Math.round(Y(v)) + .5;
+      g.beginPath(); g.moveTo(PL, y); g.lineTo(PR, y); g.stroke();
+      g.fillText(v.toFixed(ydec), PL - 8, y);
+    });
+    g.strokeStyle = '#d1d5db';
+    g.beginPath(); g.moveTo(PL + .5, PT); g.lineTo(PL + .5, PB); g.lineTo(PR, PB); g.stroke();
+    g.textAlign = 'center'; g.textBaseline = 'top';
+    const xt = niceTicks(i0, i1, 7);
+    xt.forEach(v => {
+      const i = Math.round(v);
+      if (i < i0 || i > i1) return;
+      const x = Math.round(X(i)) + .5;
+      g.strokeStyle = '#f1f3f6';
+      g.beginPath(); g.moveTo(x, PT); g.lineTo(x, PB); g.stroke();
+      g.fillStyle = '#6b7280';
+      g.fillText(fmtT(S.trace.data.Time[i]), x, PB + 6);
+    });
+
+    // 右侧角度副轴：只画轴线与刻度数字，**不重复画网格**——它和左轴共用同一片绘图区，
+    // 两套网格叠在一起反而更难读。刻度小数位由刻度步长决定（同左轴的理由）。
+    if (ovl.length) {
+      g.strokeStyle = '#d1d5db';
+      g.beginPath(); g.moveTo(Math.round(PR) + .5, PT); g.lineTo(Math.round(PR) + .5, PB); g.stroke();
+      const ostep = oticks.length > 1 ? oticks[1] - oticks[0] : (ohi - olo);
+      const odec = Math.max(0, Math.min(6, Math.ceil(-Math.log10(Math.abs(ostep) || 1) - 1e-9)));
+      g.textAlign = 'left'; g.textBaseline = 'middle'; g.fillStyle = '#6b7280';
+      for (const v of oticks) {
+        if (v < olo || v > ohi) continue;
+        g.fillText(v.toFixed(odec), PR + 6, Math.round(OY(v)) + .5);
+      }
+      // 0° 基准线：读正负号要看它，虚线画淡一点，不与数据曲线争视线
+      if (olo < 0 && ohi > 0) {
+        g.strokeStyle = '#e2e8f0'; g.lineWidth = 1; g.setLineDash([2, 3]);
+        g.beginPath(); g.moveTo(PL, Math.round(OY(0)) + .5); g.lineTo(PR, Math.round(OY(0)) + .5);
+        g.stroke(); g.setLineDash([]);
+      }
+      g.fillStyle = '#94a3b8'; g.textAlign = 'right'; g.textBaseline = 'top';
+      g.fillText('°', PR, 0);
+    }
+
+    // 数据
+    const cols = envelope(arr, i0, i1, Math.max(1, Math.round(pw)));
+    g.strokeStyle = opt.color; g.lineWidth = 1.4; g.lineJoin = 'round'; g.lineCap = 'butt';
+    if (opt.step) {
+      // 阶梯图：可视星数是整数且逐历元保持，阶梯更贴合物理含义
+      g.beginPath();
+      let pen = false, prev = null;
+      for (let c = 0; c < cols.length; c++) {
+        const col = cols[c]; if (!col) { pen = false; prev = null; continue; }
+        const x = X(col[0]), x1 = X(col[3]), y = Y(col[1]);
+        if (!pen) { g.moveTo(x, y); pen = true; }
+        else { g.lineTo(x, Y(prev)); g.lineTo(x, y); }
+        g.lineTo(x1, y);      // 横向铺满本列：最后一列正好铺到 X(i1)，否则右端缩进
+        prev = col[1];
+      }
+      g.stroke();
+    } else {
+      // 折线 + min/max 包络竖线（NaN 断开）
+      g.beginPath();
+      let pen = false;
+      for (let c = 0; c < cols.length; c++) {
+        const col = cols[c];
+        if (!col) { pen = false; continue; }
+        const xa2 = X(col[0]), xb2 = X(col[3]);
+        g.moveTo(xa2, Y(col[1])); g.lineTo(xb2, Y(col[2]));
+        if (col[2] - col[1] > 1e-12) { g.moveTo(xa2, Y(col[2])); g.lineTo(xb2, Y(col[1])); }
+        g.moveTo(xb2, Y(col[1]));
+        if (pen) g.lineTo(xb2, Y(col[1]));
+        pen = true;
+      }
+      g.stroke();
+      // 主折线
+      g.strokeStyle = opt.color; g.lineWidth = 1.5;
+      g.beginPath(); pen = false;
+      for (let i = i0; i <= i1; i++) {
+        const v = arr[i];
+        if (!isFinite(v)) { pen = false; continue; }
+        const x = X(i), y = Y(v);
+        if (!pen) { g.moveTo(x, y); pen = true; } else g.lineTo(x, y);
+      }
+      g.stroke();
+    }
+
+    /* 姿态叠加曲线：画在主序列**之后**，否则星数的阶梯线会把姿态曲线压住。
+     * **必须和主序列一样做 min/max 包络抽稀**：Roll 是快速摆动（本数据 ±54°、
+     * 周期约 10 s），5000 个历元铺到一千像素上时逐点直连会混叠成一根根假尖刺，
+     * 把"摆动范围"画成了"瞬时值"。包络竖线画的是每像素列的真实上下界，
+     * 放大后自然收敛成折线。 */
+    if (ovl.length) {
+      const ncol = Math.max(1, Math.round(pw));
+      const ocols = {};
+      for (const k of ovl) ocols[k] = envelope(S.trace.data[k], i0, i1, ncol);
+      for (const k of ovl) {
+        const d = OVL_DEF[k];
+        g.save();
+        g.globalAlpha = .92; g.lineJoin = 'round'; g.setLineDash(d.dash);
+        g.strokeStyle = d.color; g.lineWidth = 1.1;
+        g.beginPath();                       // 包络竖线（快速摆动时这就是真实形状）
+        for (const col of ocols[k]) {
+          if (!col) continue;
+          const xa2 = X(col[0]), xb2 = X(col[3]);
+          g.moveTo(xa2, OY(col[1])); g.lineTo(xb2, OY(col[2]));
+          if (col[2] - col[1] > 1e-12) { g.moveTo(xa2, OY(col[2])); g.lineTo(xb2, OY(col[1])); }
+        }
+        g.stroke();
+        g.lineWidth = 1.5;
+        g.beginPath();                       // 主折线（放大后与包络重合）
+        let pen = false;
+        for (let i = i0; i <= i1; i++) {
+          const v = S.trace.data[k][i];
+          if (!isFinite(v)) { pen = false; continue; }
+          const x = X(i), y = OY(v);
+          if (!pen) { g.moveTo(x, y); pen = true; } else g.lineTo(x, y);
+        }
+        g.stroke();
+        g.restore();
+      }
+    }
+
+    // 联动十字光标
+    if (CH.hover >= i0 && CH.hover <= i1) {
+      const x = Math.round(X(CH.hover)) + .5;
+      g.strokeStyle = '#9ca3af'; g.lineWidth = 1; g.setLineDash([4, 3]);
+      g.beginPath(); g.moveTo(x, PT); g.lineTo(x, PB); g.stroke();
+      g.setLineDash([]);
+      const v = arr[CH.hover];
+      if (isFinite(v)) {
+        g.fillStyle = opt.color;
+        g.beginPath(); g.arc(X(CH.hover), Y(v), 3.2, 0, 7); g.fill();
+        // 读数框：叠加开启时变成多行（第一行仍是主序列，下面每条姿态一行）
+        g.font = '11px ui-monospace,Menlo,Consolas,monospace';
+        const rows = [opt.fmt ? opt.fmt(v) : v.toFixed(2)];
+        for (const k of ovl) rows.push(k + ' ' + S.trace.data[k][CH.hover].toFixed(1) + '°');
+        const tw = Math.max(...rows.map(t => g.measureText(t).width)) + 12 + (ovl.length ? 10 : 0);
+        const th = rows.length * 15 + 8;
+        let bx = X(CH.hover) + 8;
+        if (bx + tw > PR) bx = X(CH.hover) - tw - 8;
+        if (bx < PL) bx = PL;
+        g.fillStyle = 'rgba(17,24,39,.90)';
+        g.beginPath();
+        g.roundRect(bx, PT + 4, tw, th, 4); g.fill();
+        g.textAlign = 'left'; g.textBaseline = 'middle';
+        rows.forEach((t, ri) => {
+          const ty = PT + 4 + 8 + ri * 15 + 7.5;
+          if (ri > 0) {                 // 每行前面画一个该曲线的颜色块，行内也能区分
+            g.fillStyle = OVL_DEF[ovl[ri - 1]].color;
+            g.fillRect(bx + 5, ty - 3.5, 7, 2.5);
+          }
+          g.fillStyle = '#fff';
+          g.fillText(t, bx + 6 + (ri > 0 ? 10 : 0), ty);
+        });
+      }
+    }
+    return { PL, PR, PT, PB, i0, i1, ovl: ovl.length };
+  }
+
+  /* ---------- ① 卫星星空图（地理坐标） ----------
+   * 行业标准的**方位-高度角极坐标星空图（sky plot）**，底图固定为：
+   *   - 三个同心圆，由外向内 = 高度角 0° / 30° / 60°，**圆心 = 天顶 90°**；
+   *   - 四条直径 = 正北-正南、东北-西南、正东-正西、东南-西北的方位角方向；
+   *   - 方位角 0°（正北）画在正上方，90°（正东）在右，即上北下南左西右东。
+   * 投影 rr = (1 − el/90)·R 天然就满足"圆心 90°、外圈 0°"，30°/60° 落在 2R/3、R/3。
+   *
+   * 注意这里有**两套坐标系**，别混：
+   *   - 画点用地理系：enu = Kᵀ·body，az = atan2(E, N)（罗盘方位，北 0 东 90）
+   *   - 判可见用两个条件：z_b > sin(掩角)（相对**天线面法线**，姿态敏感的来源）
+   *     **且** up > 0（相对**当地地平线**，地球本体的遮挡）。少第二条就会出现
+   *     跑到外圈之外的点 —— roll 摆到 ±54°、法线仰角低到 35.6° 时，
+   *     掩角 0° 有 5.6% 的"可视星"其实在地平线以下。
+   *   - 掩角截止圈画的是**高度角 = 掩角**那个圆（行业标准的高度截止角画法）。
+   *     注意它只在天线面朝天时与精确判据重合；载体倾斜时精确判据是以天线法线
+   *     为心的球冠，在这种正投影底图上是个歪的小圆，画出来很不直观，
+   *     所以这里只画标准参考圈，精确判据用于筛点（法线方位/仰角在状态行里给出）。
+   */
+  const SYS_COLOR = { G: '#1d4ed8', C: '#c2410c', E: '#047857', R: '#7c3aed',
+                      J: '#b45309', S: '#0891b2', I: '#be123c' };
+  const SKY = { ep: 0 };   // 展示哪个历元（悬停时跟随光标，移出后保持）
+
+  function drawSky(canvas) {
+    const { g, w, h } = setup(canvas);
+    g.clearRect(0, 0, w, h);
+    g.fillStyle = '#fff'; g.fillRect(0, 0, w, h);
+    if (!S.los || !S.trace || !S.trace.n) {
+      g.fillStyle = '#9ca3af'; g.font = '13px system-ui'; g.textAlign = 'center';
+      g.fillText('载入星历与轨迹后点击「运行仿真」', w / 2, h / 2);
+      return;
+    }
+    const nEp = S.trace.n, T = S.trace.data;
+    const ep = Math.max(0, Math.min(nEp - 1, SKY.ep));
+    const D2R = Math.PI / 180;
+    const cx = w / 2, cy = h / 2, R = Math.max(40, Math.min(w, h) / 2 - 32);
+    // 方位角 0 = 正北画在正上方，90 = 正东在右
+    const proj = (el, az) => {
+      const rr = (1 - el / 90) * R;
+      return [cx + rr * Math.sin(az), cy - rr * Math.cos(az)];
+    };
+
+    // 该历元的姿态：K 的行是机体系各轴在 ENU 中的表示，body = K·enu，故 enu = Kᵀ·body
+    const K = C.dcmEnuToBody(T.Yaw[ep], T.Pitch[ep], T.Roll[ep]);
+    const be = K[6], bn = K[7], bu = K[8];              // 天线法线（体系统 Z 轴）在 ENU 中
+    const bAz = Math.atan2(be, bn) / D2R;
+    const bEl = Math.asin(Math.max(-1, Math.min(1, bu))) / D2R;
+
+    // ---- 底图：三个同心圆（0°/30°/60°）+ 四条方位直径（N-S、NE-SW、E-W、SE-NW） ----
+    g.lineWidth = 1;
+    [60, 30].forEach(el => {                       // 由内向外画，内圈略浅
+      g.strokeStyle = '#e8ecf1';
+      g.beginPath(); g.arc(cx, cy, R * (1 - el / 90), 0, 7); g.stroke();
+    });
+    g.strokeStyle = '#cbd5e1';                      // 地平圈 0°
+    g.beginPath(); g.arc(cx, cy, R, 0, 7); g.stroke();
+    // 四条方位线：0/180、45/225、90/270、135/315 度，四条各是一条完整直径
+    g.strokeStyle = '#e2e7ee'; g.beginPath();
+    for (const a of [0, 45, 90, 135]) {
+      g.moveTo(cx, cy);
+      g.lineTo(cx + R * Math.sin(a * D2R), cy - R * Math.cos(a * D2R));
+    }
+    g.stroke();
+
+    // 方位标注：八个方向都标，N/E/S/W 加粗，NE/SE/SW/NW 细一档。
+    // 位置要**登记进标号避让的障碍集合** —— 否则斜方位标签（SW/NW/NE/SE）离圆心最远、
+    // 恰好落在卫星编号堆里，会被压成"SV R02"这种鬼东西（与高度角标注同一个坑）。
+    const azBoxes = [];
+    g.textAlign = 'center'; g.textBaseline = 'middle';
+    const putAz = (txt, deg, bold, col) => {
+      const [x, y] = proj(0, deg * D2R);      // proj(0,·) 落在地平圈上
+      g.fillStyle = col;
+      g.font = (bold ? '600 ' : '') + '11.5px system-ui';
+      // 径向外推一点，别压在圈线上：主方位推 14 px，斜方位推 12%（斜向离圆心更远）
+      const ux = (x - cx) / R, uy = (y - cy) / R;
+      const k = bold ? 1 + 14 / R : 1.13;
+      const tx = cx + ux * R * k, ty = cy + uy * R * k;
+      g.fillText(txt, tx, ty);
+      azBoxes.push({ x: tx, y: ty, w: g.measureText(txt).width + 3, h: 12 });
+    };
+    putAz('N', 0, true, '#334155'); putAz('S', 180, true, '#334155');
+    putAz('E', 90, true, '#334155'); putAz('W', 270, true, '#334155');
+    putAz('NE', 45, false, '#94a3b8'); putAz('SE', 135, false, '#94a3b8');
+    putAz('SW', 225, false, '#94a3b8'); putAz('NW', 315, false, '#94a3b8');
+
+    // 高度角标注：0°/30°/60° 标在正北方向竖轴上、各自圈的内侧。
+    // 只算位置，画字放到**最后**（见下方），并且要先进占位集合。
+    const elLabels = [0, 30, 60].map(el => {
+      const rr = R * (1 - el / 90);
+      return { txt: el + '°', x: cx, y: cy - rr + 11, w: 20, h: 11 };
+    });
+
+    // 掩角只作为**筛选判据**，不在底图上画任何球冠边界（见上方注释）
+    const thr = Math.sin(S.mask * D2R);
+
+    // A 视角（地平坐标系）**不画掩角圈**：掩角定义在天线面法线上，其等值面在天球上
+    // 是一枚随姿态摆动的小圆，在正投影底图上既不是正圆、位置也随姿态乱跑，
+    // 画出来只会误导（此前正是那个红圈引发了"星在圈外却仍显示"的疑问）。
+    // 判据统一由右侧 B 视角（机体系）承担，见 drawPanel()。
+
+    // 收星：可见判据用**机体系** z（掩角定义在天线面上）**且** up > 0（不能在地平线下，
+    // 地球挡着）；画点用**地理系** az/el
+    const base = ep * S.nSat * 3;
+    const vis = [], dim = [];
+    for (let s = 0; s < S.nSat; s++) {
+      if (!S.sys.has(S.satSys[s])) continue;
+      const o = base + s * 3;
+      const bx = S.los[o], by = S.los[o + 1], bz = S.los[o + 2];
+      const ex = K[0] * bx + K[3] * by + K[6] * bz;
+      const ny = K[1] * bx + K[4] * by + K[7] * bz;
+      const up = K[2] * bx + K[5] * by + K[8] * bz;
+      const el = Math.asin(Math.max(-1, Math.min(1, up))) / D2R;
+      const az = Math.atan2(ex, ny);
+      ((bz > thr && up > 0) ? vis : dim).push({ s, el, az });
+    }
+    for (const m of dim) {          // 被遮挡的星：淡灰小点；地平线以下的不画（纯噪声）
+      if (m.el < 0) continue;
+      const [x, y] = proj(m.el, m.az);
+      g.fillStyle = '#d7dce3';
+      g.beginPath(); g.arc(x, y, 1.5, 0, 7); g.fill();
+    }
+
+    // 标号避让的障碍集合。**高度角标注也是障碍**，且它自己最后画、不参与避让 ——
+    // 先画的东西后来才画，否则会被卫星编号盖掉（实测 30° 整个消失在星点里）。
+    // 卫星则仍按"两遍走"：先画全部圆点并登记，再统一摆标号。
+    const boxes = elLabels.map(q => ({ x: q.x, y: q.y, w: q.w, h: q.h }));
+    for (const b of azBoxes) boxes.push(b);   // 方位标注同样不可被编号覆盖
+
+    // 标号：绕圆点做螺旋搜索找空位。只试"右/左两个水平偏移"在密集区必然互相压字
+    //（实测出现 G05 C14、C26 C25 C24 这种粘连），必须放开角度与半径。
+    g.font = '10.5px ui-monospace,Menlo,Consolas,monospace';
+    g.textBaseline = 'middle';
+    const names = S.rinex.sats.map(s => s.sys + s.prn);
+    for (const v of vis) {
+      const [x, y] = proj(v.el, v.az);
+      v.x = x; v.y = y;
+      g.fillStyle = SYS_COLOR[S.satSys[v.s]] || '#111827';
+      g.beginPath(); g.arc(x, y, 3.1, 0, 7); g.fill();
+      boxes.push({ x, y, w: 9, h: 9 });   // 半径 3.1 的星点也要算障碍，否则编号会压住自己的点
+    }
+    // 摆放顺序：最拥挤的先摆（见 B 视角同处的说明，理由相同）
+    const order = vis.map((v, i) => {
+      let c = 0;
+      for (const o of vis) if (Math.hypot(o.x - v.x, o.y - v.y) < 36) c++;
+      return [c, i];
+    }).sort((a, b) => b[0] - a[0]).map(q => q[1]);
+    const fits = (bx, by, bw, bh) => bx - bw / 2 > 1 && bx + bw / 2 < w - 1 && by > 1 && by < h - 1 &&
+      !boxes.some(q => Math.abs(q.x - bx) < (q.w + bw) / 2 + 1 && Math.abs(q.y - by) < (q.h + bh) / 2 + 1);
+    const DIRS = [0, .45, -.45, .9, -.9, 1.35, -1.35, 1.8, -1.8, 2.25, -2.25,
+                  2.7, -2.7, 3.1, -3.1, Math.PI];
+    // 粗网格（16 个方向）只在空旷处够用：星挤成一簇时，某个方向被邻号占住，
+    // 换半径又太远，编号就退到"压在点上"的兜底分支。加密到 72 个方向后同一
+    // 半径上还有 71 个候选，实测历元 4000 的 E36 由此归位。
+    const DIRS2 = []; for (let k = 0; k < 72; k++) DIRS2.push(k * Math.PI / 36);
+    let onDot = 0;
+    for (const oi of order) {
+      const v = vis[oi];
+      const col = SYS_COLOR[S.satSys[v.s]] || '#111827';
+      const txt = names[v.s];
+      const tw = g.measureText(txt).width, th = 11;
+      let put = null;
+      // 起始半径 ≥ 半字宽 + 点半径 + 余量（B 视角同处有说明）
+      for (const rad of [16, 19.5, 23, 29, 36, 44, 53, 63, 74, 86]) {
+        for (const a of DIRS) {
+          const bx = v.x + rad * Math.cos(a), by = v.y + rad * Math.sin(a);
+          if (fits(bx, by, tw + 3, th)) { put = [bx, by]; break; }
+        }
+        if (put) break;
+        for (const a of DIRS2) {
+          const bx = v.x + rad * Math.cos(a), by = v.y + rad * Math.sin(a);
+          if (fits(bx, by, tw + 3, th)) { put = [bx, by]; break; }
+        }
+        if (put) break;
+      }
+      // 避让不开就压在点本身：宁可与邻号重叠，也不能少标一颗 ——
+      // 用户要的正是"一眼看到编号"，少一颗就等于这张图不可信。
+      if (!put) { put = [v.x, v.y]; onDot++; }
+      boxes.push({ x: put[0], y: put[1], w: tw + 3, h: th });
+      // 白色描边打底，编号压在圆点上/网格线上也能看清
+      g.textAlign = 'center';
+      g.lineWidth = 2.6; g.strokeStyle = 'rgba(255,255,255,.92)';
+      g.strokeText(txt, put[0], put[1]);
+      g.fillStyle = col;
+      g.fillText(txt, put[0], put[1]);
+    }
+
+    // 高度角标注最后画（白底描边），保证任何密度下都读得出
+    g.font = '10px system-ui'; g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.lineWidth = 2.6; g.strokeStyle = 'rgba(255,255,255,.95)';
+    for (const q of elLabels) { g.strokeText(q.txt, q.x, q.y); }
+    g.fillStyle = '#94a3b8';
+    for (const q of elLabels) { g.fillText(q.txt, q.x, q.y); }
+
+    // 状态行 + 编号列表
+    const t = T.Time[ep];
+    $('s3').textContent = 't=' + t.toFixed(0) + 's · 历元 ' + (ep + 1) + '/' + nEp +
+                          ' · 可视 ' + vis.length + ' 颗' +
+                          ' · 天线法线 az ' + bAz.toFixed(0) + '° el ' + bEl.toFixed(0) + '°' +
+                          (onDot ? '（' + onDot + ' 颗编号压在点上）' : '');
+    const list = $('prn');
+    list.textContent = '';
+    const add = (txt, dim, col) => {
+      const sp = document.createElement('span');
+      sp.textContent = txt;
+      if (dim) sp.className = 'dim';
+      else if (col) sp.style.color = col;
+      list.appendChild(sp);
+    };
+    C.SYS_ORDER.forEach(sys => {
+      const g2 = vis.filter(v => S.satSys[v.s] === sys).map(v => names[v.s]).sort();
+      if (!g2.length) return;
+      const sp = document.createElement('span');
+      sp.className = 'sys';
+      sp.style.color = SYS_COLOR[sys] || '#111827';
+      sp.textContent = sys + ' ' + g2.length + '  ';
+      list.appendChild(sp);
+      g2.forEach(p => add(p, false, SYS_COLOR[sys]));
+    });
+    if (!vis.length) add('该历元无可视星', true);
+    if (onDot) add('（' + onDot + ' 颗编号避让不开，压在圆点上，编号见本列表）', true);
+  }
+
+  let geomCache = [];
+  /* ---------- B 视角：载体 / 天线坐标系星空图（动） ----------
+   * 与左侧 A 视角（地平坐标系，静）配对，把"绝对空间"和"载体动态"剥离开：
+   *   - A：正北在上、圆心=天顶，卫星随轨道缓慢平滑移动 —— 看"这片天上本来有什么"
+   *   - B：**正上方永远是机首**、圆心永远是天线面板法线，卫星相对面板摆动
+   *        —— 偏航时整圈转、俯仰时整体后移，直接暴露姿态对可见性的影响
+   *
+   * 投影（极坐标等距，与法线的夹角）：
+   *   rr = θ/90 · Rp        θ = 视线与天线法线的夹角
+   *   方向 = 机体系 (bx, by)/hypot(bx,by)   by=机首朝上、bx=右翼朝右
+   * 注意 rr 与 θ **同向**；A 视角是 rr = (90−el)/90·R，两者别搞混。
+   *
+   * **掩角在 B 图上是一个正圆**（rr = (1 − mask/90)·Rp）—— 这正是这个视角的价值：
+   * 圆内的点全部真可视，圆外的全部被面板边缘挡住（变红）。
+   * 但"圈内"还不等于"计入"，因为还有一条**地球遮挡**（up > 0）：
+   * 面板歪得厉害时，地平线以下的星会落进这个圆里却根本收不到信号，
+   * 这类点画成空心灰圈，单独一类，不与"面板遮挡"混在一起。
+   */
+  function drawPanel(canvas) {
+    const { g, w, h } = setup(canvas);
+    g.clearRect(0, 0, w, h);
+    g.fillStyle = '#fff'; g.fillRect(0, 0, w, h);
+    if (!S.los || !S.trace || !S.trace.n) {
+      g.fillStyle = '#9ca3af'; g.font = '12px system-ui'; g.textAlign = 'center';
+      g.fillText('载入后显示', w / 2, h / 2);
+      return;
+    }
+    const nEp = S.trace.n, T = S.trace.data;
+    const ep = Math.max(0, Math.min(nEp - 1, SKY.ep));
+    const D2R = Math.PI / 180;
+    // 边距 26 px：两个汉字（"左翼""右翼"）在 11px 字号下约 22 px 宽，
+    // 边距留 18 px 时贴边对齐仍会被裁掉半个字。e2e 里 Rp 的算法必须同步。
+    const cx = w / 2, cy = h / 2, Rp = Math.max(30, Math.min(w, h) / 2 - 26);
+    const thr = Math.sin(S.mask * D2R);
+    const names = S.rinex.sats.map(s => s.sys + s.prn);
+    const showDim = $('skyMasked').checked;
+
+    // ---- 底图：面板地平线(90°) + 60°/30° 同心圈 + 机首/机尾·右翼/左翼十字 ----
+    g.fillStyle = '#f8fafc';
+    g.beginPath(); g.arc(cx, cy, Rp, 0, 7); g.fill();
+    g.lineWidth = 1;
+    [60, 30].forEach(th => {
+      g.strokeStyle = '#e8ecf1';
+      g.beginPath(); g.arc(cx, cy, Rp * th / 90, 0, 7); g.stroke();
+    });
+    g.strokeStyle = '#e2e7ee';
+    g.beginPath();
+    g.moveTo(cx - Rp, cy); g.lineTo(cx + Rp, cy);
+    g.moveTo(cx, cy - Rp); g.lineTo(cx, cy + Rp);
+    g.stroke();
+    g.strokeStyle = '#cbd5e1';
+    g.beginPath(); g.arc(cx, cy, Rp, 0, 7); g.stroke();
+
+    // ---- 掩角判据圈：夹角 90° − 掩角 -> rr = (1 − mask/90)·Rp，是一个**正圆** ----
+    const rr = Rp * (1 - S.mask / 90);
+    g.strokeStyle = '#dc2626'; g.lineWidth = 1.7; g.setLineDash([6, 4]);
+    g.beginPath(); g.arc(cx, cy, rr, 0, 7); g.stroke();
+    g.setLineDash([]);
+
+    // ---- 收星：分三类 ----
+    const vis = [], blocked = [], earth = [];
+    const base = ep * S.nSat * 3;
+    for (let s = 0; s < S.nSat; s++) {
+      if (!S.sys.has(S.satSys[s])) continue;
+      const o = base + s * 3;
+      const bx = S.los[o], by = S.los[o + 1], bz = S.los[o + 2];
+      const sinT = Math.hypot(bx, by);
+      const th = Math.acos(Math.max(-1, Math.min(1, bz))) / D2R;
+      const rec = { s, th };
+      if (sinT >= 1e-7) {
+        const rad = (th / 90) * Rp;
+        rec.x = cx + rad * (bx / sinT);
+        rec.y = cy - rad * (by / sinT);
+      } else { rec.x = cx; rec.y = cy; }        // 正好在法线上
+      // up = 天顶方向在机体系中的表示 · LOS = sin(仰角)
+      const u = S.upRow ? S.upRow[ep * 3] * bx + S.upRow[ep * 3 + 1] * by +
+                          S.upRow[ep * 3 + 2] * bz : 1;
+      if (u <= 0) {
+        // 面板朝向内、却被地球挡着 —— 唯一值得单独画的一类。
+        // 同时"面板朝不到、又在地平线下"的星两条判据都不满足，画出来纯属噪声
+        // （148 星里每历元有 90 颗这种），直接丢弃。
+        if (bz > thr) earth.push(rec);
+      } else if (bz > thr) vis.push(rec);
+      else blocked.push(rec);
+    }
+
+    if (showDim) {
+      for (const m of blocked) {                       // 被面板边缘挡住 -> 变红
+        g.fillStyle = '#ef4444';
+        g.beginPath(); g.arc(m.x, m.y, 1.7, 0, 7); g.fill();
+      }
+      for (const m of earth) {                        // 地平线以下 -> 空心灰圈
+        g.strokeStyle = '#b6bdc8'; g.lineWidth = 1;
+        g.beginPath(); g.arc(m.x, m.y, 2, 0, 7); g.stroke();
+      }
+    }
+    for (const v of vis) {
+      v.vis = true;
+      g.fillStyle = SYS_COLOR[S.satSys[v.s]] || '#111827';
+      g.beginPath(); g.arc(v.x, v.y, 3, 0, 7); g.fill();
+    }
+
+    // 摆放顺序：最拥挤的先摆（见下方标号处的说明）
+    const order = vis.map((v, i) => {
+      let c = 0;
+      for (const o of vis) if (Math.hypot(o.x - v.x, o.y - v.y) < 34) c++;
+      return [c, i];
+    }).sort((a, b) => b[0] - a[0]).map(q => q[1]);
+
+    // ---- 标号：先画点、登记障碍，再统一摆字 ----
+    // 障碍物必须**包含星点自身**。少了这一条，编号会直接压在圆点上：一个 9.5 px
+    // 的 "C22" 字宽约 17 px，半宽 8.5 px > 起始半径 7 px，第一个候选位置按几何
+    // 就必然盖住自己的点 —— 这正是用户报的"圆点和编号重叠（主要是 C 与 dot）"。
+    // 字号小一号只是让症状变轻，根因是候选半径没避开点。
+    // 另一个关键是**摆放顺序**：按卫星编号顺序贪心 = 谁排在前面谁占好位置，
+    // 密集的北斗簇（C01–C42 常年挤在一起）系统性地抢不到空位，最后只能压在点上。
+    // 改成"先摆最拥挤的"（周围 34 px 内的邻居越多越优先），拥挤簇就能拿到好位置。
+    const boxes = [{ x: cx, y: cy, w: 14, h: 14 }];   // 圆心的天线法线十字也是障碍
+    for (const v of vis) boxes.push({ x: v.x, y: v.y, w: 9, h: 9 });   // 半径 3 的星点
+    // 姿态标注（机首/机尾/左翼/右翼）与夹角圈标注（30°/60°）画在标号**之后**，
+    // 但同样会被编号压住（实测 C39 顶到「右翼」、E05 顶到「60°」）。
+    // 位置与字号都是确定的，先量好宽度登记成障碍，最后原样画出来即可。
+    const ATT = [['机首', cx, cy - Rp - 12, 'c', 0],
+                 ['机尾', cx, cy + Rp + 12, 'c', 0],
+                 ['左翼', cx - Rp - 2, cy, 'r', 0],
+                 ['右翼', cx + Rp + 2, cy, 'l', 0]];
+    const RING = [30, 60].map(t2 => {
+      const a = 45 * D2R, rad = Rp * t2 / 90 + 8;
+      return { t: t2 + '°', x: cx + rad * Math.sin(a), y: cy - rad * Math.cos(a) };
+    });
+    {
+      g.font = '600 11px system-ui';
+      for (const [t, x, y, al] of ATT)
+        boxes.push({ x: al === 'c' ? x : al === 'r' ? x - 11 : x + 11, y,
+                     w: g.measureText(t).width + 2, h: 12 });
+      g.font = '9.5px system-ui';
+      for (const r of RING) boxes.push({ x: r.x, y: r.y, w: g.measureText(r.t).width + 2, h: 11 });
+    }
+    g.font = '9.5px ui-monospace,Menlo,Consolas,monospace';
+    g.textBaseline = 'middle';
+    const fits = (bx2, by2, bw, bh) => bx2 - bw / 2 > 1 && bx2 + bw / 2 < w - 1 &&
+      by2 > 1 && by2 < h - 1 &&
+      !boxes.some(q => Math.abs(q.x - bx2) < (q.w + bw) / 2 + 1 &&
+                        Math.abs(q.y - by2) < (q.h + bh) / 2 + 1);
+    const DIRS = [0, .45, -.45, .9, -.9, 1.35, -1.35, 1.8, -1.8, 2.25, -2.25,
+                  2.7, -2.7, 3.1, -3.1, Math.PI];
+    // 加密方向：理由同 A 视角 drawSky 处的同名注释
+    const DIRS2 = []; for (let k = 0; k < 72; k++) DIRS2.push(k * Math.PI / 36);
+    let onDot = 0;
+    for (const oi of order) {
+      const v = vis[oi];
+      const txt = names[v.s];
+      const tw = g.measureText(txt).width, th2 = 10.5;
+      let put = null;
+      // 起始半径 ≥ 半字宽 + 点半径 + 余量，否则第一个候选必然压在点上
+      for (const rad of [15, 18.5, 22, 27, 33, 40, 48, 57, 67, 78]) {
+        for (const a of DIRS) {
+          const bx2 = v.x + rad * Math.cos(a), by2 = v.y + rad * Math.sin(a);
+          if (fits(bx2, by2, tw + 3, th2)) { put = [bx2, by2]; break; }
+        }
+        if (put) break;
+        for (const a of DIRS2) {
+          const bx2 = v.x + rad * Math.cos(a), by2 = v.y + rad * Math.sin(a);
+          if (fits(bx2, by2, tw + 3, th2)) { put = [bx2, by2]; break; }
+        }
+        if (put) break;
+      }
+      // 避让不开就压在点本身：宁可与邻号重叠，也不能少标一颗 —— 用户要的
+      // 就是"能一眼看到编号"，少一颗就等于这张图不可信。
+      if (!put) { put = [v.x, v.y]; onDot++; }
+      boxes.push({ x: put[0], y: put[1], w: tw + 3, h: th2 });
+      g.textAlign = 'center';
+      g.lineWidth = 2.4; g.strokeStyle = 'rgba(255,255,255,.92)';
+      g.strokeText(txt, put[0], put[1]);
+      g.fillStyle = SYS_COLOR[S.satSys[v.s]] || '#111827';
+      g.fillText(txt, put[0], put[1]);
+    }
+
+    // ---- 姿态标注：这是机体系，没有罗盘，四个方向必须写清楚 ----
+    // 左右两个**贴环边**对齐，不要按环外推：机体系没有罗盘，这四个方向必须写清楚。
+    g.textBaseline = 'middle';
+    g.font = '600 11px system-ui';
+    g.fillStyle = '#334155';
+    g.textAlign = 'center';
+    g.fillText('机首', cx, cy - Rp - 12);
+    g.fillText('机尾', cx, cy + Rp + 12);
+    g.textAlign = 'right'; g.fillText('左翼', cx - Rp - 2, cy);
+    g.textAlign = 'left';  g.fillText('右翼', cx + Rp + 2, cy);
+
+    // 夹角圈标注：30° / 60°（相对法线），画在右上方 45° 方向
+    // 必须显式居中：上一行的"右翼"用的是 textAlign='left'，继承下来会让这两个
+    // 标注整体右移半个字宽，与上面登记的避让障碍错位（实测 G05 压住 60°）。
+    g.font = '9.5px system-ui'; g.fillStyle = '#94a3b8'; g.textAlign = 'center';
+    for (const th2 of [30, 60]) {
+      const a = 45 * D2R, rad = Rp * th2 / 90 + 8;
+      const lx = cx + rad * Math.sin(a), ly = cy - rad * Math.cos(a);
+      g.lineWidth = 2.4; g.strokeStyle = 'rgba(255,255,255,.95)';
+      g.strokeText(th2 + '°', lx, ly);
+      g.fillText(th2 + '°', lx, ly);
+    }
+
+    // 圆心 = 天线法线
+    g.strokeStyle = '#0f172a'; g.lineWidth = 1.3;
+    g.beginPath();
+    g.moveTo(cx - 5, cy); g.lineTo(cx + 5, cy);
+    g.moveTo(cx, cy - 5); g.lineTo(cx, cy + 5);
+    g.stroke();
+
+    $('s4').textContent = '判据圈 r = ' + (100 * (1 - S.mask / 90)).toFixed(0) + '% Rp · 计入 ' +
+      vis.length + ' · 面板遮挡 ' + blocked.length +
+      (earth.length ? ' · 地球遮挡 ' + earth.length : '') +
+      (onDot ? '（' + onDot + ' 个编号压在点上）' : '');
+  }
+
+  function drawAll() {
+    if (!S.counts) {                          // 还没跑仿真：把三张图都画成提示态
+      geomCache = [];
+      // 提示态也要带上 overlays，否则勾了叠加再载入数据时画布宽度会跳一次
+      drawChart($('c1'), null, { color: '#1d4ed8', integer: true, step: true, overlays: ovl });
+      drawChart($('c2'), null, { color: '#c2410c' });
+      drawSky($('c3'));
+      drawPanel($('c4'));
+      ovlNote();
+      return;
+    }
+    geomCache[0] = drawChart($('c1'), S.counts, { color: '#1d4ed8', integer: true, step: true,
+                                                 fmt: v => v + ' 颗', overlays: ovl });
+    geomCache[1] = drawChart($('c2'), S.pdops,  { color: '#c2410c', fmt: v => 'PDOP ' + v.toFixed(3) });
+    drawSky($('c3'));
+    drawPanel($('c4'));
+    ovlNote();
+  }
+
+  /* 交互：悬停联动 + 滚轮缩放 + 拖拽平移 + 双击复位 */
+
+  /* 悬停/拖拽会把事件打成一串，但一帧只画一次就够：
+   * 鼠标轮询率可达 1000 Hz，若每个 mousemove 都同步重画两张 5000 点图，
+   * 主线程会被打满，光标一进图表区界面就卡住。用 rAF 合并到"每帧至多一次"。 */
+  let hoverRaf = 0;
+  function scheduleDraw() {
+    if (hoverRaf) return;
+    hoverRaf = requestAnimationFrame(() => { hoverRaf = 0; drawAll(); });
+  }
+  function cancelScheduledDraw() { if (hoverRaf) { cancelAnimationFrame(hoverRaf); hoverRaf = 0; } }
+
+  function idxFromX(canvas, clientX) {
+    const g = geomCache[canvas.id === 'c1' ? 0 : 1];
+    if (!g) return -1;
+    const r = canvas.getBoundingClientRect();
+    const x = clientX - r.left;
+    const f = (x - g.PL) / Math.max(1, g.PR - g.PL);
+    return Math.max(g.i0, Math.min(g.i1, Math.round(g.i0 + f * (g.i1 - g.i0))));
+  }
+  ['c1', 'c2'].forEach(id => {
+    const cv = $(id);
+    cv.addEventListener('mousemove', e => {
+      const h = idxFromX(cv, e.clientX);
+      if (h === CH.hover) return;           // 落在同一历元：画面无变化，别重画
+      CH.hover = h;
+      if (h >= 0) SKY.ep = h;               // 星空图跟着光标走（移出后保持该历元）
+      scheduleDraw();                       // 重画合并到下一帧
+      updateStats();                        // 每星座可视星要跟着当前历元走
+      if (S.trace && CH.hover >= 0 && S.counts) {
+        const i = CH.hover, t = S.trace.data.Time[i];
+        let s1 = 't=' + t.toFixed(0) + 's  ' + S.counts[i] + ' 颗';
+        if (ovl.length) s1 += '  ' + ovl.map(k => k + ' ' + S.trace.data[k][i].toFixed(1) + '°').join('  ');
+        $('s1').textContent = s1;
+        const p = S.pdops[i];
+        $('s2').textContent = 't=' + t.toFixed(0) + 's  PDOP ' + (isFinite(p) ? p.toFixed(3) : 'NaN');
+      }
+    });
+    cv.addEventListener('mouseleave', () => { CH.hover = -1; scheduleDraw(); updateStats(); });
+    cv.addEventListener('wheel', e => {
+      if (!S.trace) return;
+      e.preventDefault();
+      // 基准必须取 CH.xa/xb（同步更新的待绘制视窗），不能取 geomCache：
+      // 几何缓存要等下一帧才刷新，快速滚动时每个事件都会拿同一份旧几何算，连乘不上。
+      const n = S.trace.n;
+      let xa = Math.max(0, Math.floor(CH.xa)), xb = Math.min(n - 1, Math.ceil(CH.xb));
+      if (!(xb > xa)) { xa = 0; xb = n - 1; }
+      const g = geomCache[id === 'c1' ? 0 : 1]; if (!g) return;
+      const r = cv.getBoundingClientRect();
+      const f = Math.max(0, Math.min(1, (e.clientX - r.left - g.PL) / Math.max(1, g.PR - g.PL)));
+      // deltaMode 1=行 2=页，统一折算成"行"再当像素用；deltaY>0 = 向下滚 = 缩小
+      let dy = e.deltaY;
+      if (e.deltaMode === 1) dy *= 16; else if (e.deltaMode === 2) dy *= 400;
+      const K = Math.pow(1.22, Math.max(-4, Math.min(4, dy)));   // 触控板小增量 -> 接近线性
+      // 以光标处为锚点缩放：锚点 a 保持在窗口内的相对位置 f 不变
+      const span = xb - xa, a = xa + f * span;
+      let nw = Math.max(MIN_SPAN, Math.min(n - 1, span * K));
+      let na = a - f * nw, nb = na + nw;
+      // 越界时**平移**窗口而不是各自截断 —— 截断会悄悄改变宽度，正是"越滚越乱"的来源
+      if (na < 0) { na = 0; nb = nw; } else if (nb > n - 1) { nb = n - 1; na = n - 1 - nw; }
+      CH.xa = na; CH.xb = nb; scheduleDraw();
+    }, { passive: false });
+    cv.addEventListener('dblclick', () => {
+      CH.xa = 0; CH.xb = S.trace ? S.trace.n - 1 : 1; CH.hover = -1; drawAll(); updateStats();
+    });
+  });
+  let dragging = null;
+  window.addEventListener('mouseup', () => { dragging = null; });   // 注册一次即可
+  ['c1', 'c2'].forEach(id => {
+    const cv = $(id);
+    cv.addEventListener('mousedown', e => { dragging = { x: e.clientX, xa: CH.xa, xb: CH.xb }; });
+    cv.addEventListener('mousemove', e => {
+      if (!dragging || !S.trace) return;
+      const n = S.trace.n;
+      // 绘图区宽度必须从 geomCache 取，不能写死 clientWidth - PAD.l - PAD.r：
+      // 勾选姿态叠加后右侧让出 40 px 副轴，写死会让拖拽比悬停/缩放慢 4%，
+      // 表现为"拖拽跟不上指针"，且很难目测发现。
+      const g = geomCache[id === 'c1' ? 0 : 1];
+      if (!g) return;
+      const d = (dragging.x - e.clientX) / Math.max(1, g.PR - g.PL) * (dragging.xb - dragging.xa);
+      let na = dragging.xa + d, nb = dragging.xb + d;
+      if (na < 0) { nb -= na; na = 0; }
+      if (nb > n - 1) { na -= (nb - (n - 1)); nb = n - 1; }
+      CH.xa = Math.max(0, na); CH.xb = Math.min(n - 1, nb);
+      scheduleDraw();
+    });
+  });
+
+  let raf = 0;
+  window.addEventListener('resize', () => {
+    cancelAnimationFrame(raf);
+    raf = requestAnimationFrame(drawAll);
+  });
+
+  /* ---------------- 导出 ---------------- */
+  $('bExp').addEventListener('click', () => {
+    if (!S.trace || !S.counts) return;
+    const t = S.trace;
+    const thr = Math.sin(S.mask * C.D2R);
+    // PRN 列表。判据必须与 solveAll()（及 drawSky()）**逐字相同**：
+    //   z_b > sin(掩角)  且  up > 0（地平线以上）
+    // 分组按 SYS_ORDER、组内按 PRN 字符串排序，格式 "{G05,G11,...}" 与实测基准一致。
+    const idx = [];
+    for (let s = 0; s < S.nSat; s++) if (S.sys.has(S.satSys[s])) idx.push(s);
+    const names = S.rinex.sats.map(s => s.sys + s.prn);
+    function prnSet(e) {
+      const u0 = S.upRow[e * 3], u1 = S.upRow[e * 3 + 1], u2 = S.upRow[e * 3 + 2];
+      const base = e * S.nSat * 3, seen = [];
+      for (let k = 0; k < idx.length; k++) {
+        const o = base + idx[k] * 3, z = S.los[o + 2];
+        if (z <= thr) continue;
+        if (u0 * S.los[o] + u1 * S.los[o + 1] + u2 * z <= 0) continue;   // 地平线以下
+        seen.push(names[idx[k]]);
+      }
+      return C.SYS_ORDER.reduce((a, sys) =>
+        a.concat(seen.filter(x => x[0] === sys).sort()), []).join(',');
+    }
+    const out = [t.head.concat(['Visible_Count', 'PDOP', 'PRN_label']).join(',')];
+    for (let i = 0; i < t.n; i++) {
+      const p = S.pdops[i];
+      // PRN 字段内含逗号，必须加引号，否则 CSV 解析器会把一行拆成多列
+      out.push(t.rows[i] + ',' + S.counts[i] + ',' + (isFinite(p) ? p.toFixed(4) : '') +
+               ',"{' + prnSet(i) + '}"');
+    }
+    const blob = new Blob(['﻿' + out.join('\r\n') + '\r\n'], { type: 'text/csv;charset=utf-8' });
+    const a = document.createElement('a');
+    const sysTag = Array.from(S.sys).sort().join('');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'gnss_pdop_mask' + S.mask.toFixed(1) + '_' + (sysTag || 'none') + '.csv';
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+    log('已导出 ' + t.n + ' 行（含原始 ' + t.head.length + ' 列 + Visible_Count + PDOP + PRN_label）', 'g');
+  });
+
+  /* ---------------- 调试句柄 ----------------
+   * 仅供在控制台检视内部状态 / 端到端自动化使用，不影响正常交互。
+   * 例：GNSS_VIEW.state.counts[0]、GNSS_VIEW.state.pdops[0]、GNSS_VIEW.setSystems(['G'])
+   */
+  globalThis.GNSS_VIEW = { state: S, core: C, setSystems, recompute, drawAll,
+                           view: CH, sky: SKY, ovl, OVL_DEF, ovlRange,
+                           // geomCache 会被整体重新赋值，导出函数而不是数组本身
+                           geom: () => geomCache,
+                           setOvl: k => { const e = $('ov_' + k); e.checked = !e.checked; ovlSync(); },
+                           ovlSet: keys => { for (const k of OVL_KEYS) $('ov_' + k).checked = keys.indexOf(k) >= 0; ovlSync(); } };
+
+  /* ---------------- 初始化 ---------------- */
+  buildSysList();
+  drawAll();
+  log('就绪。请载入 RINEX 星历与轨迹 CSV 后点击「运行仿真」。', 'd');
+  log('提示：样本位于 samples/rnx/*.rnx 与 samples/traces/*.csv；本页不发起任何网络请求。', 'd');
+})();
+</script>
+</body>
+</html>

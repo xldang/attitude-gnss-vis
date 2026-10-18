@@ -1,0 +1,17 @@
+# 测试与工具产物：全部可由脚本重新生成，不入库
+build/
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Node
+node_modules/
+npm-debug.log*
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
