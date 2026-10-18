@@ -452,6 +452,68 @@ console.log('\n=== 星历有效期窗 (EPH_MAX_AGE = ' + (C.EPH_MAX_AGE / 3600) 
   chk('自检面板在过期率为 0 时判通过', !!good && good.pass, good ? good.detail : '未找到该判据');
 }
 
+/* ---------- 7c. 批量任务纯函数 ---------- */
+console.log('\n=== 批量任务纯函数 ===');
+{
+  // rinexSpan：覆盖范围应与首/末条电文一致，且能被换算回 UTC
+  const sp = C.rinexSpan(rinex);
+  chk('rinexSpan 覆盖范围正确',
+      sp.lo === Math.min(...rinex.sats.flatMap(s => s.recs.map(r => r.tAbs))) &&
+      sp.hi === Math.max(...rinex.sats.flatMap(s => s.recs.map(r => r.tAbs))));
+  const loU = C.gpsSecToUTC(sp.lo, rinex.header.leap);
+  chk('覆盖起点 = 2026-09-25 23:59:42',
+      loU.y === 2026 && loU.mo === 9 && loU.d === 25 && loU.h === 23, JSON.stringify(loU));
+
+  // dayTally：样本覆盖跨 09-25/09-26，但绝大多数电文在 09-26
+  const days = C.dayTally(rinex);
+  chk('dayTally 识别出 2 个日期', days.length === 2, JSON.stringify(days.map(d => [d.mo, d.d, d.n])));
+  chk('dayTally 主导日 = 09-26', days[days.length - 1].mo === 9 && days[days.length - 1].d === 26,
+      JSON.stringify(days[days.length - 1]));
+
+  // anchorFor：时分秒沿用，日期取**电文最多的那天**（不是覆盖起点那天的前一晚）
+  const a = C.anchorFor(rinex, '12:34:56');
+  const want = C.utcToGpsSec(2026, 9, 26, 12, 34, 56, rinex.header.leap);
+  chk('anchorFor 时分秒正确、日期取主导日 09-26', a.t0 === want, 't0=' + a.t0 + ' 期望 ' + want);
+  chk('anchorFor 采用该文件自己的闰秒', a.leap === rinex.header.leap);
+  chk('anchorFor 标记跨天文件', a.multiDay === true);
+  chk('anchorFor 拒绝非法时分秒 99:99', C.anchorFor(rinex, '99:99') === null);
+  chk('anchorFor 拒绝非法时分秒 12:60', C.anchorFor(rinex, '12:60') === null);
+
+  // 覆盖判定：覆盖 hi = 09-26 23:59:44，锚点 09-26 12:34:56
+  chk('覆盖判定 ok', C.coverState(a, 0, 4999) === 'ok', C.coverState(a, 0, 4999));
+  chk('覆盖判定 edge（尾部越过日末但仍在 2h 余量内）',
+      C.coverState(a, 0, 45000) === 'edge', C.coverState(a, 0, 45000));
+  chk('覆盖判定 out（尾部远超 2h 余量）',
+      C.coverState(a, 0, 86400) === 'out', C.coverState(a, 0, 86400));
+  chk('覆盖判定 out（锚点整体远在覆盖之前）',
+      C.coverState(C.anchorFor(rinex, '00:00:00'), 0, 4999) === 'ok',
+      '00:00 锚点应在 09-26 覆盖内');
+
+  // runStats 必须跳过 NaN，而不是当 0
+  const tc = Int32Array.from([4, 8, 3, 10]);
+  const tp = Float64Array.from([2.0, NaN, NaN, 6.0]);
+  const st = C.runStats(tc, tp, 4, 0.02);
+  chk('runStats 均值可见星', near(st.mean, 6.25, 1e-9), String(st.mean));
+  chk('runStats 极值可见星', st.cmin === 3 && st.cmax === 10);
+  chk('runStats PDOP 只统计可解历元', near(st.pmean, 4.0, 1e-9), String(st.pmean));
+  chk('runStats 记录 NaN 占比', near(st.pnan, 0.5, 1e-9), String(st.pnan));
+  chk('runStats 透传过期率', near(st.drop, 0.02, 1e-9));
+
+  // 全 NaN 时不能产生 NaN 均值
+  const st2 = C.runStats(tc, Float64Array.from([NaN, NaN, NaN, NaN]), 4, 0);
+  chk('runStats 全 NaN -> pmean 为 NaN 而非 0', isNaN(st2.pmean) && st2.pnan === 1);
+
+  // timeGrid / gridMatch
+  const g1 = C.timeGrid(trace), g2 = C.timeGrid(trace);
+  chk('timeGrid 首值/步长/长度', g1.first === 0 && g1.step === 1 && g1.n === 5000, JSON.stringify(g1));
+  chk('timeGrid 跨度', near(g1.span, 4999, 1e-9));
+  chk('timeGrid Time 严格递增', g1.mono === true);
+  chk('gridMatch 同一轨迹自洽', C.gridMatch(g1, g2) === true);
+  const g3 = { first: 0, step: 2, n: 5000 };
+  chk('gridMatch 步长不同 -> 不匹配', C.gridMatch(g1, g3) === false);
+  chk('gridMatch 长度不同 -> 不匹配', C.gridMatch(g1, { first: 0, step: 1, n: 4000 }) === false);
+}
+
 /* ---------- 8. 页面自检面板 ---------- */
 console.log('\n=== 页面内 selfTest() ===');
 {

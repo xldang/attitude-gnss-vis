@@ -20,6 +20,10 @@ rendered as dual-perspective sky plots plus two linked time-series charts.
   types (R/S) use second-order position extrapolation.
 - **Attitude-aware.** The mask angle is defined relative to the antenna panel normal, not to
   the local horizontal. Tilt the vehicle and the mask cone tilts with it.
+- **Batch runs.** Fix one input, multi-select the other kind, and anchor every task to the
+  same absolute instant by an explicit rule — answering "how much does this change if I swap
+  yesterday's ephemeris" or "…if I swap the flight path". The single-run interface is left
+  exactly as it was.
 - **Numerically verifiable.** The repo carries an *independently rewritten Python
   implementation* (`reference/ref_pdop.py`) plus two test suites. The JS and Python
   implementations cross-check each other; a real receiver's field measurements serve as a
@@ -55,7 +59,7 @@ attitude-gnss-vis/
 │  └─ ref_pdop.py           Independent Python implementation (numerical baseline for the JS)
 ├─ test/
 │  ├─ test_core.js          Node core regression: JS vs Python, epoch by epoch
-│  ├─ e2e_browser.js        Browser end-to-end: drives real Chrome over CDP, 88 assertions
+│  ├─ e2e_browser.js        Browser end-to-end: drives real Chrome over CDP, 138 assertions
 │  ├─ fixtures/
 │  │  ├─ train_set.csv      Real receiver measurements (regression fixture)
 │  │  └─ sky-ref/           Measured sky-plot screenshots, one per epoch of train_set.csv
@@ -106,6 +110,58 @@ The same format is produced by **[sim-trace](https://github.com/your-id/sim-trac
   unavailable (epoch, satellite) pair. The resulting fraction is reported in the log and
   the status bar as “ephemeris expired x%”. The sample ephemeris deviates by at most
   +1.39 h / −2.00 h, so the default window drops nothing for this dataset.
+
+## Batch runs
+
+The single-run interface is **untouched** apart from one new “批量任务” button at the top.
+The batch overlay has its own inputs, its own mask and constellation selection, and its own
+result views, fully isolated from single-run state (one e2e assertion guards that boundary).
+The core pipeline `parseRinex → buildLOSChunk → solveAll` is reused verbatim, so batch and
+single-run results share one numeric definition — measured: the same input yields 53.413
+mean satellites in both.
+
+| Mode | Fixed file | Multi-select | Source of the difference |
+|---|---|---|---|
+| ① | Trajectory CSV | several ephemeris files | day-to-day ephemeris variation |
+| ② | Ephemeris RINEX | several trajectory CSVs | flight-path / attitude variation |
+
+### How the start instant is anchored
+
+`Time` in a trajectory is a relative second offset and carries no absolute date. Batch mode
+anchors it to UTC with an explicit “start instant” field:
+
+- **Mode ①** uses the **day holding the most broadcast records** in each ephemeris file,
+  plus the given time of day. “Most records” rather than “first covered day” is deliberate:
+  a nominally one-day file often starts covering on the previous evening. The sample
+  `BRDM00DLR_S_20262690000` covers 2026-09-25 23:59:42 → 09-26 23:59:44, with 15060 records
+  on 09-26 and only 89 on 09-25 — anchoring at the coverage start would shift everything by
+  12 hours and mark every task expired.
+- **Mode ②** gives every trajectory the same absolute instant, all counted from the
+  identical moment.
+
+Before running, a preview table reports **coverage** per file: `ok` (the whole trajectory lies
+inside the ephemeris span), `edge` (partly inside the ±2 h window), `out` (essentially no
+coverage — numbers from such a task are untrustworthy and are flagged red).
+
+### Grid consistency (mode ②)
+
+Trajectories may differ in epoch count, step and span (the `train_set.csv` sample is 9 points
+at 3600 s; the flight profile is 5000 at 1 s). This does not affect the aggregate statistics,
+but it does make the x values of the per-epoch CSV unalignable, so the preview table flags
+grid consistency separately and tells you to read the aggregate when it fails.
+
+### The four result views
+
+| View | Content |
+|---|---|
+| Comparison curves | Per-epoch curves of all tasks. The y-axis toggles between **Δ baseline** and **absolute** — under Δ the baseline itself is identically 0 (a line on the floor), so only the absolute view tells you what it dropped *from*. Click a legend entry to change the baseline |
+| Date trend | Mode ①: one point per ephemeris file, x ordered by anchored date |
+| Trajectory spread | Mode ②: one point per trajectory, x = mean altitude |
+| Summary table | Per task: epochs, visible count mean/extremes, PDOP mean/peak, NaN ratio, drop rate, elapsed ms |
+
+Two CSVs are exportable — a long per-epoch table (`task,t0_utc,epoch,t_rel_s,visible_count,
+pdop,drop_rate`) and the summary table (`task,t0_utc,epochs,mean_visible,...,drop_rate,cover,ms`);
+both filenames carry the mask angle.
 
 ## Verification
 
@@ -188,11 +244,14 @@ only those can catch it:
   tropospheric, satellite-clock or relativistic correction, and performs no point-positioning
   solution. What it outputs is the **geometric dilution of precision**, not actual positioning
   error.
-- `Time` in the trajectory is a relative timestamp with no absolute date. The absolute epoch
-  is established implicitly by aligning the trajectory's first epoch with the first broadcast
-  record in the ephemeris file. Confirm this correspondence yourself when using ephemeris
-  from a different day — the “ephemeris expired” figure on the status bar is the direct
-  indicator when it does not hold.
+- `Time` in the trajectory is a relative timestamp with no absolute date. In single-run mode
+  the absolute epoch is established implicitly by aligning the trajectory's first epoch with
+  the first broadcast record in the ephemeris file. Confirm this correspondence yourself when
+  using ephemeris from a different day — the “ephemeris expired” figure on the status bar is
+  the direct indicator when it does not hold. Batch mode makes the correspondence explicit
+  (start-instant field plus a coverage verdict), but the anchored *date* is still an
+  **inference**: if a file's records are too evenly spread to identify one dominant day, check
+  the anchored date in the preview table by hand.
 - `Height` is used directly as ellipsoidal height; no geoid correction is applied.
 - Broadcast ephemeris only — precise and rapid products are not supported.
 

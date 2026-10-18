@@ -143,6 +143,49 @@ details.fold > summary::-webkit-details-marker{display:none}
 details.fold > summary::before{content:'▸';font-size:10px;transition:transform .12s;display:inline-block}
 details.fold[open] > summary::before{transform:rotate(90deg)}
 details.fold > div{margin-top:6px}
+
+/* ---------- 批量任务（全屏浮层）----------
+   单任务界面一行不动；批量自成一套，互不干扰。 */
+.batch{position:fixed;inset:0;background:var(--bg);z-index:100;display:none;overflow:auto;
+  padding:14px 16px 40px}
+.batch.on{display:block}
+.bwrap{max-width:1420px;margin:0 auto}
+.bhead{display:flex;align-items:center;gap:10px;margin-bottom:13px;flex-wrap:wrap}
+.bhead h1{margin:0}
+.bgrid{display:grid;grid-template-columns:326px minmax(0,1fr);gap:13px;align-items:start}
+@media(max-width:1160px){.bgrid{grid-template-columns:1fr}}
+.bmodes{display:flex;flex-direction:column;gap:6px}
+.bmode{display:flex;gap:8px;align-items:flex-start;padding:7px 8px;border:1px solid var(--line);
+  border-radius:7px;cursor:pointer;background:#fff;font-size:12.5px}
+.bmode:hover{border-color:var(--accent)}
+.bmode.on{border-color:var(--accent);background:var(--accent-soft)}
+.bmode input{accent-color:var(--accent);margin:2px 0 0;cursor:pointer;flex:0 0 auto}
+.bmode b{display:block;margin-bottom:2px}
+.bmode span{color:var(--muted);font-size:11.5px;line-height:1.5;display:block}
+/* 预览表：把「哪些文件会跑、锚到什么时刻、覆盖够不够」摆在烧时间之前 */
+table.btab{width:100%;border-collapse:collapse;font:11.5px var(--mono)}
+table.btab th{text-align:left;font-weight:600;color:var(--muted);padding:4px 6px;
+  border-bottom:1px solid var(--line);font-size:11px;letter-spacing:.3px;white-space:nowrap}
+table.btab td{padding:3.5px 6px;border-bottom:1px solid var(--line);white-space:nowrap;
+  max-width:230px;overflow:hidden;text-overflow:ellipsis}
+table.btab td.num{text-align:right}
+table.btab tr.st-edge td{background:#fffbeb}
+table.btab tr.st-out td{background:#fef2f2}
+table.btab tr.st-base td{background:var(--accent-soft)}
+.btabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:9px}
+.btabs button.on{background:var(--accent);border-color:var(--accent);color:#fff}
+.blegend{display:flex;flex-wrap:wrap;gap:3px 12px;margin-top:7px;font:11px var(--mono);color:var(--muted)}
+.blegend span{display:inline-flex;align-items:center;gap:5px;max-width:210px}
+.blegend i{width:13px;height:0;border-top:2px solid var(--c);display:inline-block;flex:0 0 auto}
+.bnote{font-size:11.5px;color:var(--muted);line-height:1.55;margin-top:7px}
+.bwarn{background:#fffbeb;border:1px solid #fcd34d;color:#92400e;border-radius:6px;
+  padding:7px 9px;font-size:11.5px;line-height:1.55;margin-top:8px}
+.bwarn.err{background:#fef2f2;border-color:#fca5a5;color:#991b1b}
+.chips{display:flex;flex-wrap:wrap;gap:5px;margin-top:2px}
+.chip{display:inline-flex;align-items:center;gap:4px;padding:2.5px 7px;border:1px solid var(--line);
+  border-radius:999px;font:11px var(--mono);cursor:pointer;user-select:none;background:#fff}
+.chip:hover{border-color:var(--accent)}
+.chip.on{border-color:var(--accent);background:var(--accent-soft);color:var(--accent);font-weight:600}
 </style>
 </head>
 <body>
@@ -180,6 +223,10 @@ details.fold > div{margin-top:6px}
           <button id="bSelf" disabled>自检</button>
         </div>
         <div class="prog" id="prog"><i></i></div>
+        <div class="row">
+          <button id="bBatch">批量任务 →</button>
+        </div>
+        <div class="hint">固定一条轨迹跑多份星历，或固定一份星历跑多条轨迹，起始时刻按各文件对齐。</div>
       </div>
 
       <div class="panel">
@@ -313,6 +360,123 @@ Yaw 画的是轨迹 CSV 里的**原样罗盘方位角**。它跨 ±180° / 0° �
           </div>
         </details>
         <div id="tests"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ================= 批量任务浮层（单任务界面之外的独立一套） ================= -->
+<div class="batch" id="batch">
+  <div class="bwrap">
+    <div class="bhead">
+      <h1>批量任务
+        <small>固定一维、扫描另一维；起始时刻按各文件自身覆盖自动对齐</small>
+      </h1>
+      <span class="q d" tabindex="0" data-t="两个模式构成一组对照：
+
+**模式 1** 固定一条轨迹，跑多份星历，锚定到各自文件的**相同时分秒**。差异**只来自日期** —— 轨道每天提前约 4 分钟，同一时刻的天空构型逐日漂移。
+
+**模式 2** 固定一份星历，跑多条轨迹，全部从**同一绝对时刻**起算。差异**只来自航迹与姿态**。
+
+日期一律从文件自身推断（取电文最多的那个 UTC 日），不需要手选。闰秒用各文件 header 里的值。
+运行前请先看预览表：覆盖判定为 out 的行，其结果不可信。">?</span>
+      <button id="bClose" style="margin-left:auto">← 返回单任务</button>
+    </div>
+
+    <div class="bgrid">
+      <!-- 左：配置 -->
+      <div>
+        <div class="panel">
+          <h2>模式</h2>
+          <div class="bmodes" id="bmodes">
+            <label class="bmode on" id="bm1">
+              <input type="radio" name="bmode" value="1" checked>
+              <span><b>① 固定单条轨迹 × 多份星历</b>
+              <span>起始时刻锚定到各星历文件的相同时分秒。差异只来自日期。</span></span>
+            </label>
+            <label class="bmode" id="bm2">
+              <input type="radio" name="bmode" value="2">
+              <span><b>② 固定单份星历 × 多条轨迹</b>
+              <span>全部轨迹从同一绝对时刻起算。差异只来自航迹与姿态。</span></span>
+            </label>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h2>输入</h2>
+          <label id="bLblFixed">固定文件（轨迹 CSV）</label>
+          <input type="file" id="bFixed" accept=".csv,text/csv">
+          <div class="fname" id="bFixedName">未选择</div>
+
+          <label style="margin-top:9px" id="bLblMany">批量文件（多份星历）</label>
+          <input type="file" id="bMany" accept=".rnx,.RINEX,.txt,text/plain" multiple>
+          <div class="fname" id="bManyName">未选择</div>
+        </div>
+
+        <div class="panel">
+          <h2>起始时刻
+            <span class="q" tabindex="0" data-t="只指定**时分秒**。日期由每个星历文件自身推断 —— 取该文件导航电文最多的那个 UTC 日。
+
+不能简单取覆盖起点：标称一天的文件往往从当日 00:00 之前就开始覆盖。样本 BRDM00DLR_S_20262690000 覆盖 09-25 23:59:42 → 09-26 23:59:44，其中 09-26 有 15060 条电文、09-25 只有 89 条，按起点锚会整整偏 12 小时。">?</span>
+          </h2>
+          <input type="time" id="bHms" step="1" value="00:00:00">
+          <div class="hint" id="bHmsHint"></div>
+        </div>
+
+        <div class="panel">
+          <h2>仿真参数</h2>
+          <label>星座</label>
+          <div class="chips" id="bChips"></div>
+          <div class="row" style="margin-top:8px">
+            <button id="bAll">全选</button>
+            <button id="bNone">全不选</button>
+          </div>
+          <label style="margin-top:11px">天线高度角截止（掩角）</label>
+          <div style="display:flex;align-items:center;gap:10px">
+            <input type="range" id="bMask" min="0" max="45" step="0.5" value="15">
+            <div class="maskval" id="bMaskv">15.0°</div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h2>运行</h2>
+          <div class="row">
+            <button id="bGo" class="primary" disabled>开始批量仿真</button>
+            <button id="bStop" disabled>停止</button>
+          </div>
+          <div class="prog" id="bProg"><i></i></div>
+          <div class="hint" id="bProgText">载入文件后可先看预览表，确认锚定时刻与覆盖范围。</div>
+        </div>
+      </div>
+
+      <!-- 右：预览 + 结果 -->
+      <div>
+        <div class="panel">
+          <h2>运行预览
+            <span class="q" tabindex="0" data-t="跑之前把每个任务摊开：解析后的起始时刻、星数、历元数，以及**覆盖判定**。
+判定 out 表示轨迹要走的时段超出了星历覆盖（±2 h 余量也算在内），那一行的结果不可信。
+判定 edge 表示边缘擦到日界，尾部会有部分历元被标记星历过期。">?</span>
+          </h2>
+          <div id="bPrev">尚未载入文件。</div>
+        </div>
+
+        <div class="panel" id="bResPanel" style="display:none">
+          <h2>结果</h2>
+          <div class="btabs" id="bTabs">
+            <button data-v="delta" class="on">对比曲线</button>
+            <button data-v="trend">日期趋势</button>
+            <button data-v="dist">轨迹分布</button>
+            <button data-v="sum">汇总表</button>
+            <button id="bScale" title="切换纵轴口径">纵轴：Δ 基线</button>
+          </div>
+          <div id="bView"></div>
+          <div class="blegend" id="bLegend"></div>
+          <div class="bnote" id="bNote"></div>
+          <div class="row" style="margin-top:10px">
+            <button id="bExpRuns" class="primary">导出逐历元 CSV</button>
+            <button id="bExpSum">导出汇总 CSV</button>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -1028,6 +1192,117 @@ Yaw 画的是轨迹 CSV 里的**原样罗盘方位角**。它跨 ±180° / 0° �
     return { mean: tot / nEp };
   }
 
+  /* ---------- 批量任务用的纯函数（本段仍不碰 DOM，可在 Node 里单测） ---------- */
+
+  /* 星历文件的时间覆盖范围：全部导航电文 tAbs 的 min/max。
+   * 用数据本身而不是 header 的 TIME OF FIRST OBS —— 后者在很多混合电文文件里
+   * 指向的是拼接起点，与实际覆盖未必一致，而且只给一个端点。 */
+  function rinexSpan(rinex) {
+    let lo = Infinity, hi = -Infinity;
+    for (const s of rinex.sats) for (const r of s.recs) {
+      if (r.tAbs < lo) lo = r.tAbs;
+      if (r.tAbs > hi) hi = r.tAbs;
+    }
+    return isFinite(lo) ? { lo, hi } : null;
+  }
+
+  /* 逐 UTC 日统计导航电文条数，按日期升序。
+   *
+   * 关键在于**不能**拿覆盖起点当锚定日期：标称一天的文件实际覆盖常从当日 00:00
+   * 之前开始。样本 BRDM00DLR_S_20262690000 覆盖 09-25 23:59:42 → 09-26 23:59:44，
+   * 绝大部分数据在 09-26；按起点锚会把所有任务挪到 09-25，差 12 小时，整批过期。
+   * 取电文最多的那一天才对。 */
+  function dayTally(rinex) {
+    const leap = rinex.header.leap, tally = new Map();
+    for (const s of rinex.sats) for (const r of s.recs) {
+      const d = gpsSecToUTC(r.tAbs, leap);
+      const k = d.y * 10000 + d.mo * 100 + d.d;
+      tally.set(k, (tally.get(k) || 0) + 1);
+    }
+    return [...tally.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([k, n]) => ({ y: Math.floor(k / 10000), mo: Math.floor(k / 100) % 100,
+                          d: k % 100, n }));
+  }
+
+  /* 把「时分秒」锚到该星历文件电文最多的那一天。
+   *
+   * 模式 1（固定轨迹 × 多星历）需要它：每个文件的日期不同，但锚定的时分秒相同，
+   * 这样差异只来自日期。日期取自文件而非用户手选 —— N 个文件手选既繁琐又易错。
+   *
+   * 闰秒一律用该文件 header 里的值：不同日期、不同处理中心的文件可能给出不同的
+   * 闰秒计数，混用会让 t0 在 GPS 秒上整体错开。
+   * 返回 null 表示该文件没有任何可用的电文，或时分秒非法。 */
+  function anchorFor(rinex, hms) {
+    const span = rinexSpan(rinex);
+    if (!span) return null;
+    const p = String(hms || '').split(':').map(Number);
+    const hh = p[0], mi = p[1], ss = p[2] || 0;
+    if (p.length < 2 || p.some(isNaN)) return null;
+    if (!(hh >= 0 && hh < 24 && mi >= 0 && mi < 60 && ss >= 0 && ss < 60)) return null;
+    const days = dayTally(rinex);
+    if (!days.length) return null;
+    const top = days.reduce((a, b) => b.n > a.n ? b : a);
+    const leap = rinex.header.leap;
+    const t0 = utcToGpsSec(top.y, top.mo, top.d, hh, mi, ss, leap);
+    return { t0, span, leap, day: { y: top.y, mo: top.mo, d: top.d },
+             days, multiDay: days.length > 1, share: top.n / days.reduce((a, b) => a + b.n, 0) };
+  }
+
+  /* 覆盖判定：轨迹实际会走的时间窗 [t0+Time[0], t0+Time[n-1]] 是否落在
+   * [span.lo, span.hi] 之内，前后各留 EPH_MAX_AGE 的余量（超窗的那部分会被
+   * selectEph 判不可用）。返回 'ok' | 'edge' | 'out'。 */
+  function coverState(anchor, tLo, tHi) {
+    if (!anchor) return 'out';
+    const a = anchor.t0 + tLo, b = anchor.t0 + tHi;
+    if (a < anchor.span.lo - EPH_MAX_AGE || b > anchor.span.hi + EPH_MAX_AGE) return 'out';
+    if (a < anchor.span.lo || b > anchor.span.hi) return 'edge';
+    return 'ok';
+  }
+
+  /* 逐历元结果的聚合统计。PDOP 在可视星 < 4 时是 NaN，必须**跳过**而不是当 0：
+   * 否则均值会被稀释成一个小数，图表也会画出假的连续曲线。
+   * pnan 单独报出 NaN 占比，供判断「这段时间是不是根本不可解」。 */
+  function runStats(counts, pdops, nEp, dropRate) {
+    let cSum = 0, cMin = Infinity, cMax = -Infinity;
+    let pSum = 0, pOk = 0, pMin = Infinity, pMax = -Infinity;
+    for (let e = 0; e < nEp; e++) {
+      const c = counts[e];
+      cSum += c;
+      if (c < cMin) cMin = c;
+      if (c > cMax) cMax = c;
+      const p = pdops[e];
+      if (isFinite(p)) { pSum += p; pOk++; if (p < pMin) pMin = p; if (p > pMax) pMax = p; }
+    }
+    return {
+      mean: cSum / nEp, cmin: cMin, cmax: cMax,
+      pmean: pOk ? pSum / pOk : NaN,
+      pmin: pOk ? pMin : NaN,
+      pmax: pOk ? pMax : NaN,
+      pnan: 1 - pOk / nEp,
+      drop: dropRate == null ? 0 : dropRate
+    };
+  }
+
+  /* 轨迹的时间网格特征 —— 模式 2 的「逐历元可比性」就靠它判断。
+   * 网格一致（首值、步长、长度都相同）才允许按历元序号对齐做 Δ。 */
+  function timeGrid(trace) {
+    const T = trace.data.Time, n = trace.n;
+    const first = n ? T[0] : 0, last = n ? T[n - 1] : 0;
+    const step = n > 1 ? (T[1] - T[0]) : 0;
+    let mono = true;
+    for (let i = 1; i < n; i++) if (!(T[i] > T[i - 1])) { mono = false; break; }
+    let meanAlt = 0;
+    if (n) for (let i = 0; i < n; i++) meanAlt += trace.data.Height[i];
+    return { first, last, step, n, mono, span: last - first,
+             meanAlt: n ? meanAlt / n : 0 };
+  }
+
+  /* 两个时间网格是否可按历元序号对齐比较 */
+  function gridMatch(a, b) {
+    return a.n === b.n && a.first === b.first && Math.abs(a.step - b.step) < 1e-9;
+  }
+
   // 通用 4×4 求逆（增广 + 部分主元）
   function matInv4(M) {
     const A = [];
@@ -1054,7 +1329,8 @@ Yaw 画的是轨迹 CSV 里的**原样罗盘方位角**。它跨 ±180° / 0° �
     SYS_INFO, SYS_ORDER, KEP_SYS, NLINE, EPH_MAX_AGE,
     parseRinex, parseTraceCSV, selectEph, propagate, llhToEcef, matMul3, enuFromEcef,
     dcmEnuToBody, pdopFromQ, buildLOSChunk, attUpRow, solveAll, selfTest, matInv4,
-    utcToGpsSec, gpsSecToUTC
+    utcToGpsSec, gpsSecToUTC,
+    rinexSpan, dayTally, anchorFor, coverState, runStats, timeGrid, gridMatch
   };
 })(typeof globalThis !== 'undefined' ? globalThis : this);
 </script>
@@ -1399,7 +1675,8 @@ Yaw 画的是轨迹 CSV 里的**原样罗盘方位角**。它跨 ±180° / 0° �
   const CHART_H = { c1: +$('c1').getAttribute('height') || 230,
                     c2: +$('c2').getAttribute('height') || 230,
                     c3: +$('c3').getAttribute('height') || 360,
-                    c4: +$('c4').getAttribute('height') || 150 };
+                    c4: +$('c4').getAttribute('height') || 150,
+                    b1: 260 };
 
   function setup(canvas) {
     const dpr = window.devicePixelRatio || 1;
@@ -2257,6 +2534,686 @@ Yaw 画的是轨迹 CSV 里的**原样罗盘方位角**。它跨 ±180° / 0° �
     log('已导出 ' + t.n + ' 行（含原始 ' + t.head.length + ' 列 + Visible_Count + PDOP + PRN_label）', 'g');
   });
 
+  /* ============================================================================
+   * 批量任务
+   *
+   * 与单任务**完全隔离**：不读不写 S 的任何计算结果，不调用 drawAll/drawSky，
+   * 只有掩角初值从单任务同步一次。单任务界面除顶部那个跳转按钮外一行未改。
+   *
+   * 复用 C.* 纯函数跑同一条流水线（parseRinex → buildLOSChunk → solveAll），
+   * 所以批量与单任务的数值口径必然一致 —— 差别只在锚定时刻与统计口径。
+   * ==========================================================================*/
+  const B = {
+    mode: 1,
+    mask: 15,
+    sys: new Set(C.SYS_ORDER),
+    fixed: null,          // { name, kind:'rinex'|'trace', obj }
+    many: [],             // [{ name, kind, obj }]
+    runs: [],             // 跑完的结果
+    tasks: [],            // 预览出来的任务表
+    busy: false,
+    stop: false,
+    view: 'delta',
+    baseline: 0,
+    delta: true          // 对比曲线的纵轴口径：true = Δ 基线，false = 绝对值
+  };
+
+  /* 批量专用色板。与单任务的星座色不同域，避免两处颜色含义混淆。 */
+  const B_COLORS = ['#1d4ed8', '#b91c1c', '#047857', '#b45309', '#7c3aed', '#0891b2',
+                    '#be185d', '#4d7c0f', '#7e22ce', '#0f766e', '#c2410c', '#3730a3'];
+  const colorOf = i => B_COLORS[i % B_COLORS.length];
+
+  /* ---------- 模式切换：标签、accept、控件启用 ----------
+   * 模式 1 = 固定**轨迹** × 多份星历；模式 2 = 固定**星历** × 多条轨迹。
+   * 所以「固定文件是不是星历」在模式 2 才成立 —— 早期版本这里写反过，
+   * 导致模式 1 拿 CSV 去当星历解析。 */
+  function fixedIsRinex() { return B.mode === 2; }
+  /* 批量侧永远与固定侧**相反**：模式①固定轨迹→批量星历，模式②固定星历→批量轨迹。
+     两个函数成对定义，避免再次只改一个。 */
+  const fixedKind = () => fixedIsRinex() ? 'rinex' : 'trace';
+  const manyKind = () => fixedIsRinex() ? 'trace' : 'rinex';
+
+  function syncHmsHint() {
+    $('bHmsHint').textContent = B.mode === 1
+      ? '各星历取该文件「电文最多的那一天」+ 这个时分秒作为锚定时刻，日期不同则自动错日对齐。'
+      : '所有轨迹共用这一个绝对时刻，从完全相同的瞬间起算。';
+  }
+
+  function syncMode() {
+    $('bm1').classList.toggle('on', B.mode === 1);
+    $('bm2').classList.toggle('on', B.mode === 2);
+    $('bLblFixed').textContent = fixedIsRinex()
+      ? '固定文件（星历 RINEX 3.04）' : '固定文件（轨迹 CSV）';
+    $('bLblMany').textContent = fixedIsRinex()
+      ? '批量文件（多条轨迹）' : '批量文件（多份星历）';
+    // 固定与批量的文件类型在每个模式下是**相反**的，不能共用一个 accept
+    const accR = '.rnx,.RINEX,.txt,text/plain', accC = '.csv,text/csv';
+    $('bFixed').accept = fixedKind() === 'rinex' ? accR : accC;
+    $('bMany').accept = manyKind() === 'rinex' ? accR : accC;
+    // 换了模式，旧的解析结果类型不再适用，必须清掉而不是沿用
+    B.fixed = null; B.many = []; B.runs = []; B.tasks = [];
+    $('bFixedName').textContent = '未选择';
+    $('bManyName').textContent = '未选择';
+    $('bPrev').textContent = '尚未载入文件。';
+    $('bResPanel').style.display = 'none';
+    syncHmsHint();
+    refreshGo();
+  }
+
+  Array.from(document.getElementsByName('bmode')).forEach(r =>
+    r.addEventListener('change', () => { if (r.checked) { B.mode = +r.value; syncMode(); } }));
+
+  /* ---------- 星座 chips ---------- */
+  function buildChips() {
+    const box = $('bChips');
+    box.textContent = '';
+    C.SYS_ORDER.forEach(sys => {
+      const el = document.createElement('span');
+      el.className = 'chip' + (B.sys.has(sys) ? ' on' : '');
+      el.textContent = sys + ' ' + C.SYS_INFO[sys].name;
+      el.addEventListener('click', () => {
+        if (B.sys.has(sys)) B.sys.delete(sys); else B.sys.add(sys);
+        buildChips();
+      });
+      box.appendChild(el);
+    });
+  }
+  $('bAll').addEventListener('click', () => { B.sys = new Set(C.SYS_ORDER); buildChips(); });
+  $('bNone').addEventListener('click', () => { B.sys = new Set(); buildChips(); });
+  $('bMask').addEventListener('input', e => {
+    B.mask = parseFloat(e.target.value);
+    $('bMaskv').textContent = B.mask.toFixed(1) + '°';
+  });
+
+  /* ---------- 文件载入 ---------- */
+  function parseAs(kind, txt, name) {
+    return kind === 'rinex' ? C.parseRinex(txt) : C.parseTraceCSV(txt);
+  }
+
+  function loadFixed() {
+    const f = $('bFixed').files && $('bFixed').files[0];
+    if (!f) return;
+    const kind = fixedKind();
+    const rd = new FileReader();
+    rd.onload = () => {
+      try {
+        const obj = parseAs(kind, rd.result, f.name);
+        if (kind === 'rinex' && !obj.sats.length) throw new Error('未解析到任何导航电文');
+        B.fixed = { name: f.name, kind, obj };
+        $('bFixedName').textContent = f.name + (kind === 'rinex'
+          ? ' · ' + obj.sats.length + ' 颗星' : ' · ' + obj.n + ' 行');
+        buildTasks();
+      } catch (e) {
+        B.fixed = null;
+        $('bFixedName').textContent = f.name + ' · 解析失败：' + e.message;
+        buildTasks();
+      }
+    };
+    rd.readAsText(f);
+  }
+
+  /* 批量解析必须**逐个 async** 且每个之间让出主线程：一份 8 MB 星历的定宽字段
+   * 扫描要几百毫秒，一次性同步解析 30 份会把页面冻结十几秒，用户无从得知进度，
+   * 也没法中途反悔。FileReader 本身也是异步的，但 onload 里同步解析同样会卡。 */
+  const yieldUI = () => new Promise(r => setTimeout(r, 0));
+
+  async function loadMany() {
+    const files = Array.from($('bMany').files || []);
+    if (!files.length) return;
+    const kind = manyKind();
+    B.many = [];
+    $('bManyName').textContent = '解析中 0/' + files.length + '…';
+    let nOk = 0;
+    for (let i = 0; i < files.length; i++) {
+      const f = files[i];
+      $('bManyName').textContent = '解析中 ' + (i + 1) + '/' + files.length + '：' + cut(f.name, 28);
+      await yieldUI();
+      const txt = await new Promise(res => {
+        const rd = new FileReader();
+        rd.onload = () => res(rd.result);
+        rd.onerror = () => res(null);
+        rd.readAsText(f);
+      });
+      if (txt == null) { B.many.push({ name: f.name, kind, obj: null, err: '读取失败' }); continue; }
+      try {
+        const obj = parseAs(kind, txt, f.name);
+        if (kind === 'rinex' && !obj.sats.length) throw new Error('未解析到任何导航电文');
+        B.many.push({ name: f.name, kind, obj });
+        nOk++;
+      } catch (e) {
+        B.many.push({ name: f.name, kind, obj: null, err: e.message });
+      }
+    }
+    $('bManyName').textContent = files.length + ' 份' + (nOk < files.length
+      ? '（' + (files.length - nOk) + ' 份解析失败）' : '');
+    buildTasks();
+  }
+  $('bFixed').addEventListener('change', loadFixed);
+  $('bMany').addEventListener('change', loadMany);
+  $('bHms').addEventListener('change', () => { if (B.fixed || B.many.length) buildTasks(); });
+
+  /* ---------- 任务表：把每个待跑任务解析成一条可预览的记录 ----------
+   * 模式 1：每个星历文件一个任务，共用同一条轨迹。
+   * 模式 2：每条轨迹一个任务，共用同一份星历与同一个 t0。 */
+  function buildTasks() {
+    B.tasks = [];
+    const hms = $('bHms').value || '00:00:00';
+    const need = (B.fixed && B.many.length);
+    if (need) {
+      if (B.mode === 1) {
+        // 固定轨迹，每份星历一个任务
+        const trace = B.fixed.obj, g = C.timeGrid(trace);
+        B.many.forEach(m => {
+          if (!m.obj) { B.tasks.push({ name: m.name, err: m.err, kind: 'rinex' }); return; }
+          const a = C.anchorFor(m.obj, hms);
+          if (!a) { B.tasks.push({ name: m.name, err: '锚定失败（时分秒非法或无电文）', kind: 'rinex' }); return; }
+          B.tasks.push({
+            name: m.name, kind: 'rinex', rinex: m.obj, trace,
+            anchor: a, grid: g, t0Gps: a.t0,
+            cover: C.coverState(a, g.first, g.last)
+          });
+        });
+      } else {
+        // 固定星历，每条轨迹一个任务，共用同一个 t0
+        const rinex = B.fixed.obj, a = C.anchorFor(rinex, hms);
+        B.many.forEach(m => {
+          if (!m.obj) { B.tasks.push({ name: m.name, err: m.err, kind: 'trace' }); return; }
+          const g = C.timeGrid(m.obj);
+          B.tasks.push({
+            name: m.name, kind: 'trace', rinex, trace: m.obj,
+            anchor: a, grid: g, t0Gps: a ? a.t0 : 0,
+            cover: a ? C.coverState(a, g.first, g.last) : 'out'
+          });
+        });
+      }
+    }
+    renderPrev();
+    refreshGo();
+  }
+
+  function refreshGo() {
+    const ok = B.fixed && B.many.length && B.sys.size && B.tasks.length && !B.busy;
+    $('bGo').disabled = !ok;
+  }
+
+  /* ---------- 预览表 ---------- */
+  function renderPrev() {
+    const box = $('bPrev');
+    if (!B.fixed || !B.many.length) { box.textContent = '尚未载入完整输入。'; return; }
+    const okRuns = B.tasks.filter(t => !t.err);
+    const bad = okRuns.filter(t => t.cover === 'out').length;
+    const edge = okRuns.filter(t => t.cover === 'edge').length;
+    const hms = $('bHms').value || '00:00:00';
+
+    let html = '<table class="btab"><thead><tr>';
+    if (B.mode === 1) {
+      html += '<th>星历文件</th><th>锚定日期</th><th class="num">星数</th>' +
+              '<th class="num">历元</th><th class="num">闰秒</th><th>覆盖</th></tr></thead><tbody>';
+    } else {
+      html += '<th>轨迹文件</th><th class="num">历元</th><th class="num">步长</th>' +
+              '<th class="num">平均高度</th><th class="num">跨度</th><th>网格</th></tr></thead><tbody>';
+    }
+    B.tasks.forEach((t, i) => {
+      if (t.err) {
+        html += '<tr class="st-out"><td>' + esc(t.name) + '</td><td colspan="5" class="y">解析失败：' + esc(t.err) + '</td></tr>';
+        return;
+      }
+      if (B.mode === 1) {
+        const cls = t.cover === 'out' ? 'st-out' : t.cover === 'edge' ? 'st-edge' : '';
+        const cv = t.cover === 'ok' ? '<span class="g">ok</span>'
+                : t.cover === 'edge' ? '<span class="y">edge</span>'
+                : '<span class="r">out</span>';
+        html += '<tr class="' + cls + '"><td title="' + esc(t.name) + '">' + esc(t.name) + '</td>' +
+                '<td>' + t.anchor.day.y + '-' + p2(t.anchor.day.mo) + '-' + p2(t.anchor.day.d) + ' ' + hms + '</td>' +
+                '<td class="num">' + t.rinex.sats.length + '</td>' +
+                '<td class="num">' + t.grid.n + '</td>' +
+                '<td class="num">' + t.anchor.leap + '</td>' +
+                '<td>' + cv + '</td></tr>';
+      } else {
+        const g = B.tasks[0].grid;
+        const same = i === 0 ? '（基准）' : (C.gridMatch(g, t.grid) ? '一致' : '<span class="y">不一致</span>');
+        html += '<tr class="st-' + (t.cover === 'out' ? 'out' : t.cover === 'edge' ? 'edge' : 'base') + '">' +
+                '<td title="' + esc(t.name) + '">' + esc(t.name) + '</td>' +
+                '<td class="num">' + t.grid.n + '</td>' +
+                '<td class="num">' + t.grid.step.toFixed(3) + ' s</td>' +
+                '<td class="num">' + (t.grid.meanAlt / 1000).toFixed(2) + ' km</td>' +
+                '<td class="num">' + (t.grid.span / 60).toFixed(1) + ' min</td>' +
+                '<td>' + same + '</td></tr>';
+      }
+    });
+    html += '</tbody></table>';
+
+    const notes = [];
+    if (B.mode === 1) {
+      const multi = okRuns.filter(t => t.anchor.multiDay);
+      if (multi.length) {
+        notes.push('<div class="bwarn">' + multi.length + ' 份星历的覆盖跨了多个 UTC 日，' +
+          '已取电文最多的那天锚定。逐日对比时建议确认各文件确实标称同一天。</div>');
+      }
+      if (bad) notes.push('<div class="bwarn err">' + bad + ' 项覆盖判定为 out —— ' +
+        '这些任务的轨迹时段超出了星历覆盖（±' + (C.EPH_MAX_AGE / 3600) + ' h 余量内），结果不可信。</div>');
+      if (edge) notes.push('<div class="bwarn">' + edge + ' 项覆盖判定为 edge —— ' +
+        '尾部越过日界，部分历元会被标记星历过期，看汇总表里的过期率。</div>');
+    } else {
+      const g0 = B.tasks.find(t => !t.err);
+      const mism = okRuns.filter(t => !C.gridMatch(g0.grid, t.grid));
+      if (mism.length) {
+        notes.push('<div class="bwarn">' + mism.length + ' 条轨迹的 Time 网格与基准不一致（首值/步长/长度）。' +
+          '此时第 i 个历元并不落在同一绝对时刻，「对比曲线」按历元序号对齐只具有参考意义。</div>');
+      }
+      const a = okRuns[0] && okRuns[0].anchor;
+      if (a) {
+        notes.push('<div class="bnote">全部任务共用锚定时刻 ' +
+          a.day.y + '-' + p2(a.day.mo) + '-' + p2(a.day.d) + ' ' +
+          ($('bHms').value || '00:00:00') + ' UTC（取自星历电文最多的日期）。</div>');
+      }
+    }
+    box.innerHTML = html + notes.join('');
+  }
+
+  const p2 = v => (v < 10 ? '0' + v : '' + v);
+  function esc(s) { return String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+
+  /* ---------------- 运行 ---------------- */
+  $('bGo').addEventListener('click', runBatch);
+  $('bStop').addEventListener('click', () => { B.stop = true; });
+
+  /* upRow 只与轨迹有关：模式 1 里轨迹固定，5000×3 个 double 只算一次给所有任务复用。 */
+  let upCache = { trace: null, up: null };
+
+  function runBatch() {
+    if (B.busy) return;
+    const todo = B.tasks.filter(t => !t.err);
+    if (!todo.length) return;
+    B.busy = true; B.stop = false; B.runs = [];
+    $('bGo').disabled = true; $('bStop').disabled = false;
+    const bar = $('bProg'), fill = bar.querySelector('i');
+    bar.classList.add('on');
+    const t0all = performance.now();
+
+    let k = 0;
+    (function next() {
+      if (B.stop || k >= todo.length) {
+        bar.classList.remove('on'); fill.style.width = '0';
+        B.busy = false;
+        $('bStop').disabled = true;
+        refreshGo();
+        if (B.runs.length) { $('bResPanel').style.display = ''; renderResults(); }
+        $('bProgText').textContent = B.stop
+          ? '已停止，完成 ' + B.runs.length + '/' + todo.length + ' 项。'
+          : '完成 ' + B.runs.length + ' 项，耗时 ' + ((performance.now() - t0all) / 1000).toFixed(1) + ' s。';
+        return;
+      }
+      runOne(todo[k], k, todo.length, fill, () => { k++; next(); });
+    })();
+  }
+
+  /* 一个任务 = 一遍与单任务相同的流水线，分块让出主线程。
+   * 跑完立即丢弃 LOS：只留 counts/pdops。5000 历元 × ~148 星 × 3 float32 ≈ 8.9 MB，
+   * 30 个任务若全部留着就是 267 MB —— 所以绝不能累积。 */
+  function runOne(t, k, total, fill, next) {
+    const nEp = t.trace.n, nSat = t.rinex.sats.length;
+    const satSys = t.rinex.sats.map(s => s.sys);
+    const los = new Float32Array(nEp * nSat * 3);
+    const valid = new Int32Array(nEp);
+    const counts = new Int32Array(nEp), pdops = new Float64Array(nEp);
+
+    if (upCache.trace !== t.trace) upCache = { trace: t.trace, up: C.attUpRow(t.trace, nEp) };
+    const upRow = upCache.up;
+
+    const CHUNK = 250;
+    let i = 0;
+    const tms = performance.now();
+    function step() {
+      if (B.stop) { next(); return; }
+      const j = Math.min(nEp, i + CHUNK);
+      C.buildLOSChunk(t.rinex, t.trace, t.t0Gps, i, j, los, satSys, nSat, C.EPH_MAX_AGE, valid);
+      i = j;
+      fill.style.width = (100 * (k + i / nEp) / total).toFixed(1) + '%';
+      $('bProgText').textContent = '任务 ' + (k + 1) + '/' + total + '：' + t.name +
+        '（历元 ' + i + '/' + nEp + '）';
+      if (i < nEp) { requestAnimationFrame(step); return; }
+
+      const idx = [];
+      for (let s = 0; s < nSat; s++) if (B.sys.has(satSys[s])) idx.push(s);
+      C.solveAll(los, nSat, nEp, idx, B.mask, counts, pdops, upRow);
+      let vs = 0;
+      for (let e = 0; e < nEp; e++) vs += valid[e];
+      const drop = 1 - vs / (nEp * nSat);
+
+      B.runs.push({
+        name: t.name, kind: t.kind, rinex: t.rinex, trace: t.trace,
+        t0Gps: t.t0Gps, t0Utc: C.gpsSecToUTC(t.t0Gps, t.rinex.header.leap),
+        grid: t.grid, nEp, nSat, nSel: idx.length,
+        counts, pdops, upRow,
+        stats: C.runStats(counts, pdops, nEp, drop),
+        cover: t.cover, ms: performance.now() - tms
+      });
+      next();
+    }
+    requestAnimationFrame(step);
+  }
+
+  /* ---------------- 结果视图 ---------------- */
+  $('bTabs').addEventListener('click', e => {
+    const b = e.target.closest('button[data-v]');
+    if (!b) return;
+    B.view = b.dataset.v;
+    Array.from($('bTabs').children).forEach(x => x.classList.toggle('on', x === b));
+    renderResults();
+  });
+
+  /* 纵轴口径切换只在对比曲线视图下有意义，其他视图下隐藏 */
+  $('bScale').addEventListener('click', () => { B.delta = !B.delta; renderResults(); });
+
+  function renderResults() {
+    if (!B.runs.length) return;
+    const base = Math.max(0, Math.min(B.baseline, B.runs.length - 1));
+    B.baseline = base;
+    const view = $('bView');
+    $('bLegend').textContent = '';
+    $('bNote').textContent = '';
+    // bScale 不是 tab，但要和 tab 一起刷新高亮态（切 tab 时上面的 forEach 会清掉它）
+    const sc = $('bScale');
+    sc.style.display = B.view === 'delta' ? '' : 'none';
+    sc.textContent = B.delta ? '纵轴：Δ 基线' : '纵轴：绝对值';
+    sc.classList.toggle('on', B.delta && B.view === 'delta');
+    if (B.view === 'sum') { view.innerHTML = sumTable(); return; }
+    const cv = document.createElement('canvas');
+    cv.id = 'b1'; cv.height = CHART_H.b1;
+    cv.setAttribute('height', CHART_H.b1);
+    view.innerHTML = '';
+    view.appendChild(cv);
+    if (B.view === 'delta') drawDelta(cv);
+    else if (B.view === 'trend') drawTrend(cv);
+    else drawDist(cv);
+  }
+
+  /* 多序列折线。X 来自每条 run 的 grid（模式 1 是相对秒，模式 2 是绝对 UTC 秒）。
+   * Y 有两种口径：绝对值看得见真实量级，Δ 看得见相对基准的差异 ——
+   * 两者都需要，因为 Δ 图里基准自己恒为 0（一条贴地的直线），只有绝对值图
+   * 能告诉你「这个 Δ 是从多少降下来的」。 */
+  function drawDelta(cv) {
+    const base = B.runs[B.baseline];
+    const abs = B.mode === 2;                       // 模式 2 用绝对时刻作横轴
+    const asDelta = B.delta;
+    const series = B.runs.map((r, i) => {
+      const T = r.trace.data.Time;
+      const x = new Float64Array(r.nEp);
+      for (let e = 0; e < r.nEp; e++) x[e] = abs ? r.t0Gps + T[e] : T[e];
+      const y = new Float64Array(r.nEp);
+      // Δ 口径下基准自己也是 0 —— 与其余曲线同口径，不能给基准开特例画绝对值
+      for (let e = 0; e < r.nEp; e++) {
+        y[e] = asDelta ? r.counts[e] - base.counts[e] : r.counts[e];
+      }
+      return { name: r.name, x, y, color: colorOf(i),
+               base: i === B.baseline, width: i === B.baseline ? 2.4 : 1.2 };
+    });
+    plotLines(cv, series, {
+      xLabel: abs ? '绝对时刻（UTC）' : '相对起始时刻（s）',
+      yLabel: asDelta ? 'Δ 可视卫星数（相对基准）' : '可视卫星数',
+      xFmt: abs ? (v => fmtUtc(v)) : (v => fmtT(v)),
+      yFmt: yFmtFor(extent(series, 'y'), asDelta),
+      baseIdx: B.baseline
+    });
+    const lg = $('bLegend');
+    lg.innerHTML = B.runs.map((r, i) =>
+      '<span><i style="--c:' + colorOf(i) + '"></i>' + esc(cut(r.name, 22)) +
+      (i === B.baseline ? '（基准）' : '') + '</span>').join('');
+    $('bNote').textContent = (asDelta
+      ? '纵轴为「本任务可视星数 − 基准任务」。基准自身恒为 0（贴地直线）—— 想看量级请切回「绝对值」。'
+      : '纵轴为可视星数。切换到「Δ 基线」可只看与基准的差异。') +
+      '点击图例可更换基准任务。';
+    // 图例点击 = 换基准
+    Array.from(lg.querySelectorAll('span')).forEach((el, i) => {
+      el.style.cursor = 'pointer';
+      el.addEventListener('click', () => { B.baseline = i; renderResults(); });
+    });
+  }
+
+  /* 日期趋势：X = 任务序号（按锚定日期排序），Y = 均值。点比曲线更能读出逐日漂移。 */
+  function drawTrend(cv) {
+    const ord = B.runs.map((r, i) => i).sort((a, b) => {
+      const A = B.runs[a].t0Utc, D = B.runs[b].t0Utc;
+      return (A.y - D.y) || (A.mo - D.mo) || (A.d - D.d);
+    });
+    const series = [{
+      name: 'mean', color: '#1d4ed8', line: false, dot: true,
+      x: ord.map((_, k) => k + 1),
+      y: ord.map(i => B.runs[i].stats.mean),
+      label: ord.map((i, k) => fmtDay(B.runs[i].t0Utc) + ' ' + cut(B.runs[i].name, 10))
+    }];
+    plotScatter(cv, series, {
+      xLabel: '锚定日期（按时间排序）', yLabel: '平均可视卫星数',
+      yFmt: v => v.toFixed(1)
+    });
+    $('bLegend').innerHTML = '';
+    $('bNote').textContent = '每个点 = 一个星历文件。横坐标为按锚定日期排序后的序号，' +
+      '标签见点下方；纵坐标为该任务全程的平均可视星数。点的散布即逐日差异。';
+  }
+
+  /* 轨迹分布：X = 平均高度，Y = 均值可见星数 —— 看同一时刻下航迹带来的离散。 */
+  function drawDist(cv) {
+    const series = [{
+      name: 'dist', color: '#1d4ed8', line: false, dot: true,
+      x: B.runs.map(r => r.grid.meanAlt / 1000),
+      y: B.runs.map(r => r.stats.mean),
+      label: B.runs.map(r => cut(r.name, 12))
+    }];
+    plotScatter(cv, series, {
+      xLabel: '轨迹平均高度（km）', yLabel: '平均可视卫星数',
+      xFmt: v => v.toFixed(1), yFmt: v => v.toFixed(1)
+    });
+    $('bLegend').innerHTML = '';
+    $('bNote').textContent = '每个点 = 一条轨迹，全部从同一绝对时刻起算。' +
+      '若各轨迹高度相近而纵坐标仍分散，说明差异来自航迹走向与姿态，而非高度。';
+  }
+
+  /* ---------- 通用绘图 ---------- */
+
+  /* 小数位数随量程走。Δ 口径下多条曲线几乎重合时量程会塌到 ±0.5，
+     固定取整会让每个刻度都印成「0」，看上去像坏了。 */
+  function yFmtFor([lo, hi], signed) {
+    const dec = hi - lo < 2 ? 1 : 0;
+    return v => (signed && v > 0 ? '+' : '') + v.toFixed(dec);
+  }
+
+  function plotFrame(cv, series, opt, xl, yl) {
+    const { g, w, h } = setup2(cv);
+    const L = 58, R = 14, Tp = 10, Bm = 40;
+    const pw = w - L - R, ph = h - Tp - Bm;
+    g.clearRect(0, 0, w, h);
+    g.strokeStyle = '#e5e7eb'; g.lineWidth = 1;
+    g.fillStyle = '#6b7280'; g.font = '10px ' + getComputedStyle(document.body).fontFamily;
+    g.textAlign = 'right'; g.textBaseline = 'middle';
+    for (const v of yl.ticks) {
+      const y = Math.round(yl.map(v)) + 0.5;
+      g.beginPath(); g.moveTo(L, y); g.lineTo(L + pw, y); g.stroke();
+      g.fillText(yl.fmt(v), L - 6, y);
+    }
+    g.textAlign = 'center'; g.textBaseline = 'top';
+    for (const v of xl.ticks) {
+      const x = Math.round(xl.map(v)) + 0.5;
+      g.beginPath(); g.moveTo(x, Tp); g.lineTo(x, Tp + ph); g.stroke();
+      g.fillText(xl.fmt(v), x, Tp + ph + 5);
+    }
+    g.strokeStyle = '#9ca3af';
+    g.beginPath(); g.moveTo(L + 0.5, Tp); g.lineTo(L + 0.5, Tp + ph); g.lineTo(L + pw, Tp + ph); g.stroke();
+    // 轴标题
+    g.fillStyle = '#6b7280'; g.font = '10.5px ' + getComputedStyle(document.body).fontFamily;
+    g.fillText(opt.yLabel, L, 2);
+    g.textAlign = 'right';
+    g.fillText(opt.xLabel, L + pw, h - 12);
+    return { g, L, Tp, pw, ph };
+  }
+
+  function setup2(cv) {
+    const dpr = window.devicePixelRatio || 1;
+    const w = cv.clientWidth || 800, h = CHART_H.b1;
+    const W = Math.round(w * dpr), H = Math.round(h * dpr);
+    if (cv.width !== W || cv.height !== H) { cv.width = W; cv.height = H; }
+    cv.style.height = h + 'px';
+    const g = cv.getContext('2d');
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    return { g, w, h };
+  }
+
+  function extent(series, key) {
+    let lo = Infinity, hi = -Infinity;
+    for (const s of series) for (let i = 0; i < s[key].length; i++) {
+      const v = s[key][i];
+      if (!isFinite(v)) continue;
+      if (v < lo) lo = v; if (v > hi) hi = v;
+    }
+    if (!isFinite(lo)) return [0, 1];
+    if (hi - lo < 1e-9) { lo -= 0.5; hi += 0.5; }
+    const pad = (hi - lo) * 0.08;
+    return [lo - pad, hi + pad];
+  }
+
+  function plotLines(cv, series, opt) {
+    const [xlo, xhi] = extent(series, 'x'), [ylo, yhi] = extent(series, 'y');
+    const xt = niceTicks(xlo, xhi, 6), yt = niceTicks(ylo, yhi, 5);
+    const F = plotFrame(cv, series, opt, {
+      lo: xlo, hi: xhi, ticks: xt, fmt: opt.xFmt,
+      map: v => 58 + (v - xlo) / (xhi - xlo) * (cv.clientWidth - 72)
+    }, {
+      lo: ylo, hi: yhi, ticks: yt, fmt: opt.yFmt,
+      map: v => 10 + (1 - (v - ylo) / (yhi - ylo)) * (CHART_H.b1 - 50)
+    });
+    series.forEach(s => {
+      F.g.strokeStyle = s.color; F.g.lineWidth = s.width;
+      F.g.globalAlpha = s.base ? 1 : 0.72;
+      F.g.beginPath();
+      let pen = false;
+      for (let i = 0; i < s.x.length; i++) {
+        if (!isFinite(s.y[i])) { pen = false; continue; }
+        const X = F.L + (s.x[i] - xlo) / (xhi - xlo) * F.pw;
+        const Y = F.Tp + (1 - (s.y[i] - ylo) / (yhi - ylo)) * F.ph;
+        if (pen) F.g.lineTo(X, Y); else { F.g.moveTo(X, Y); pen = true; }
+      }
+      F.g.stroke();
+      F.g.globalAlpha = 1;
+    });
+  }
+
+  function plotScatter(cv, series, opt) {
+    const [xlo, xhi] = extent(series, 'x'), [ylo, yhi] = extent(series, 'y');
+    const xt = niceTicks(xlo, xhi, 6), yt = niceTicks(ylo, yhi, 5);
+    const F = plotFrame(cv, series, opt, {
+      lo: xlo, hi: xhi, ticks: xt, fmt: opt.xFmt || (v => String(Math.round(v))),
+      map: v => 58 + (v - xlo) / (xhi - xlo) * (cv.clientWidth - 72)
+    }, {
+      lo: ylo, hi: yhi, ticks: yt, fmt: opt.yFmt,
+      map: v => 10 + (1 - (v - ylo) / (yhi - ylo)) * (CHART_H.b1 - 50)
+    });
+    const s = series[0];
+    F.g.fillStyle = s.color;
+    for (let i = 0; i < s.x.length; i++) {
+      if (!isFinite(s.x[i]) || !isFinite(s.y[i])) continue;
+      const X = F.L + (s.x[i] - xlo) / (xhi - xlo) * F.pw;
+      const Y = F.Tp + (1 - (s.y[i] - ylo) / (yhi - ylo)) * F.ph;
+      F.g.beginPath(); F.g.arc(X, Y, i === B.baseline ? 5 : 4, 0, 6.2832); F.g.fill();
+      if (s.label) {
+        F.g.fillStyle = '#6b7280'; F.g.font = '9.5px ' + getComputedStyle(document.body).fontFamily;
+        F.g.textAlign = 'center'; F.g.textBaseline = 'top';
+        F.g.fillText(s.label[i], X, Y + 8);
+        F.g.fillStyle = s.color;
+      }
+    }
+  }
+
+  function fmtUtc(gpsSec) { return fmtDay(C.gpsSecToUTC(gpsSec, B.runs[0].rinex.header.leap)); }
+  function fmtDay(d) { return d.y + '-' + p2(d.mo) + '-' + p2(d.d) + ' ' + p2(d.h) + ':' + p2(d.mi); }
+  function cut(s, n) { s = String(s); return s.length > n ? s.slice(0, n - 1) + '…' : s; }
+
+  /* ---------- 汇总表 ---------- */
+  function sumTable() {
+    const R = B.runs, bl = R[B.baseline];
+    let h = '<table class="btab"><thead><tr><th>任务</th><th>锚定时刻</th>' +
+      '<th class="num">历元</th><th class="num">均值</th><th class="num">范围</th>' +
+      '<th class="num">Δ均值</th><th class="num">PDOP均值</th><th class="num">PDOP峰值</th>' +
+      '<th class="num">过期率</th><th class="num">耗时</th></tr></thead><tbody>';
+    R.forEach((r, i) => {
+      const s = r.stats;
+      const dm = (i === B.baseline) ? '—' :
+        ((s.mean - bl.stats.mean > 0 ? '+' : '') + (s.mean - bl.stats.mean).toFixed(2));
+      const cls = i === B.baseline ? 'st-base' : r.cover === 'out' ? 'st-out' : r.cover === 'edge' ? 'st-edge' : '';
+      h += '<tr class="' + cls + '"><td title="' + esc(r.name) + '">' + esc(cut(r.name, 20)) + '</td>' +
+        '<td>' + fmtDay(r.t0Utc) + '</td>' +
+        '<td class="num">' + r.nEp + '</td>' +
+        '<td class="num">' + s.mean.toFixed(2) + '</td>' +
+        '<td class="num">' + s.cmin + '~' + s.cmax + '</td>' +
+        '<td class="num">' + dm + '</td>' +
+        '<td class="num">' + (isFinite(s.pmean) ? s.pmean.toFixed(3) : '—') + '</td>' +
+        '<td class="num">' + (isFinite(s.pmax) ? s.pmax.toFixed(2) : '—') + '</td>' +
+        '<td class="num' + (s.drop >= 0.01 ? ' r' : '') + '">' + (s.drop * 100).toFixed(2) + '%</td>' +
+        '<td class="num">' + (r.ms / 1000).toFixed(1) + 's</td></tr>';
+    });
+    h += '</tbody></table>';
+    $('bNote').textContent = 'Δ均值 = 本任务均值 − 基准任务均值（第 1 行）。' +
+      '过期率高于 1% 的行已标红，其数值不可信。';
+    return h;
+  }
+
+  /* ---------- 导出 ---------- */
+  function saveCsv(name, text) {
+    const blob = new Blob(['﻿' + text.join('\r\n') + '\r\n'], { type: 'text/csv;charset=utf-8' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = name;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  }
+
+  $('bExpRuns').addEventListener('click', () => {
+    if (!B.runs.length) return;
+    const out = ['task,t0_utc,epoch,t_rel_s,visible_count,pdop,drop_rate'];
+    B.runs.forEach(r => {
+      const T = r.trace.data.Time, d = fmtDay(r.t0Utc).replace(' ', 'T');
+      for (let e = 0; e < r.nEp; e++) {
+        const p = r.pdops[e];
+        out.push([r.name, d, e, T[e], r.counts[e],
+                  isFinite(p) ? p.toFixed(4) : '', r.stats.drop.toFixed(6)].join(','));
+      }
+    });
+    saveCsv('batch_runs_mask' + B.mask.toFixed(1) + '.csv', out);
+    $('bProgText').textContent = '已导出逐历元数据 ' + B.runs.length + ' 项 × ' + B.runs[0].nEp + ' 历元。';
+  });
+
+  $('bExpSum').addEventListener('click', () => {
+    if (!B.runs.length) return;
+    const out = ['task,t0_utc,epochs,mean_visible,min_visible,max_visible,pmean,pmax,pnan_ratio,drop_rate,cover,ms'];
+    B.runs.forEach(r => {
+      const s = r.stats;
+      out.push([r.name, fmtDay(r.t0Utc).replace(' ', 'T'), r.nEp,
+                s.mean.toFixed(4), s.cmin, s.cmax,
+                isFinite(s.pmean) ? s.pmean.toFixed(4) : '',
+                isFinite(s.pmax) ? s.pmax.toFixed(4) : '',
+                s.pnan.toFixed(6), s.drop.toFixed(6), r.cover,
+                r.ms.toFixed(0)].join(','));
+    });
+    saveCsv('batch_summary_mask' + B.mask.toFixed(1) + '.csv', out);
+    $('bProgText').textContent = '已导出汇总 ' + B.runs.length + ' 行。';
+  });
+
+  /* ---------- 打开 / 关闭 ---------- */
+  $('bBatch').addEventListener('click', () => {
+    B.mask = S.mask;                       // 同步一次初值，之后批量自成一套
+    $('bMask').value = B.mask;
+    $('bMaskv').textContent = B.mask.toFixed(1) + '°';
+    buildChips();
+    $('batch').classList.add('on');
+    syncHmsHint();                           // 首次打开也要把提示语摆正（不能调 syncMode，它会清空已载入的文件）
+    if (B.fixed || B.many.length) buildTasks();
+    window.scrollTo(0, 0);
+  });
+  $('bClose').addEventListener('click', () => { $('batch').classList.remove('on'); });
+
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && $('batch').classList.contains('on')) $('batch').classList.remove('on');
+  });
+
   /* ---------------- 调试句柄 ----------------
    * 仅供在控制台检视内部状态 / 端到端自动化使用，不影响正常交互。
    * 例：GNSS_VIEW.state.counts[0]、GNSS_VIEW.state.pdops[0]、GNSS_VIEW.setSystems(['G'])
@@ -2266,7 +3223,8 @@ Yaw 画的是轨迹 CSV 里的**原样罗盘方位角**。它跨 ±180° / 0° �
                            // geomCache 会被整体重新赋值，导出函数而不是数组本身
                            geom: () => geomCache,
                            setOvl: k => { const e = $('ov_' + k); e.checked = !e.checked; ovlSync(); },
-                           ovlSet: keys => { for (const k of OVL_KEYS) $('ov_' + k).checked = keys.indexOf(k) >= 0; ovlSync(); } };
+                           ovlSet: keys => { for (const k of OVL_KEYS) $('ov_' + k).checked = keys.indexOf(k) >= 0; ovlSync(); },
+                           batch: B, batchOpen: () => $('bBatch').click() };
 
   /* ---------------- 初始化 ---------------- */
   buildSysList();

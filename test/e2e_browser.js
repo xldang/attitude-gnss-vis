@@ -1027,6 +1027,221 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     console.log('  已另存 build/e2e_export.csv 供 Python 独立逐历元核对');
   }
 
+  console.log('\n=== 批量任务 · 模式 ①（固定轨迹 × 多星历）===');
+  // 复用同一份轨迹当"固定文件"，同一份星历当"批量文件"（同一份重复两次）——
+  // 这样两个任务锚定到同一时刻，结果必须逐位相同，正好用来验证锚定与流水线的确定性。
+  {
+    await evalJS('document.getElementById("bBatch").click()');
+    await sleep(300);
+    chk('批量浮层已打开', await evalJS('document.getElementById("batch").classList.contains("on")'));
+    // 模式 ① 固定的是**轨迹**、批量的是**星历**（早期版本这里写反过）
+    chk('模式① 固定文件标签 = 轨迹、批量标签 = 星历',
+        await evalJS('document.getElementById("bLblFixed").textContent.includes("轨迹") &&' +
+                     'document.getElementById("bLblMany").textContent.includes("星历")'),
+        await evalJS('document.getElementById("bLblFixed").textContent + " / " +' +
+                     'document.getElementById("bLblMany").textContent'));
+    chk('模式① accept 与文件类型相符',
+        await evalJS('document.getElementById("bFixed").accept.includes(".csv") &&' +
+                     'document.getElementById("bMany").accept.includes(".rnx")'));
+    chk('单任务界面未被改动（结果仍在）',
+        (await evalJS('GNSS_VIEW.state.counts.length')) === 5000);
+
+    const doc2 = await send('DOM.getDocument', { depth: -1 });
+    // 8 MB 星历解析要时间，不能用固定 sleep —— 轮询到条件成立为止
+    const setFiles = async (sel, fl, until) => {
+      const q = await send('DOM.querySelector', { nodeId: doc2.result.root.nodeId, selector: sel });
+      await send('DOM.setFileInputFiles', { files: fl, nodeId: q.result.nodeId });
+      for (let i = 0; i < 200; i++) { await sleep(200); if (await evalJS(until)) return true; }
+      return false;
+    };
+    const okFixed = await setFiles('#bFixed', [CSV],
+      'GNSS_VIEW.batch.fixed && document.getElementById("bFixedName").textContent.includes("行")');
+    const okMany = await setFiles('#bMany', [RNX, RNX],
+      'GNSS_VIEW.batch.many.length === 2 && !document.getElementById("bManyName").textContent.includes("解析中")');
+    chk('固定轨迹解析完成', okFixed,
+        await evalJS('document.getElementById("bFixedName").textContent'));
+    chk('批量星历解析完成（2 份）', okMany,
+        await evalJS('document.getElementById("bManyName").textContent') +
+        (okMany ? '' : '  错误: ' + await evalJS(
+          'GNSS_VIEW.batch.many.map(m=>m.name+":"+(m.err||("ok/"+(m.obj?m.obj.sats.length+"星":"null")))).join(" | ")')));
+
+    chk('固定文件与批量文件均已解析',
+        await evalJS('GNSS_VIEW.batch.fixed && GNSS_VIEW.batch.many.length === 2'),
+        await evalJS('document.getElementById("bManyName").textContent'));
+    void okFixed; void okMany;
+    chk('预览表已生成 2 行任务', await evalJS('GNSS_VIEW.batch.tasks.length') === 2);
+    chk('起始按钮已解锁', !(await evalJS('document.getElementById("bGo").disabled')));
+
+    // 锚定日期必须取电文最多的那天（09-26），不是覆盖起点的 09-25
+    const anc = await evalJS('GNSS_VIEW.batch.tasks.map(t=>' +
+      't.anchor.day.y+"-"+String(t.anchor.day.mo).padStart(2,"0")+"-"+String(t.anchor.day.d).padStart(2,"0"))');
+    chk('锚定日期 = 电文最多的 09-26（非覆盖起点的 09-25）',
+        anc.every(d => d === '2026-09-26'), JSON.stringify(anc));
+    chk('覆盖判定为 ok（00:00 锚点落在当日覆盖内）',
+        await evalJS('GNSS_VIEW.batch.tasks.every(t=>t.cover==="ok")'),
+        await evalJS('GNSS_VIEW.batch.tasks.map(t=>t.cover).join(",")'));
+    chk('预览表无 out 告警',
+        !(await evalJS('!!document.querySelector("#bPrev .bwarn.err")')));
+
+    // 掩角 0° 让可见星更多，也避开 PDOP 在低仰角下的退化
+    await evalJS('(()=>{const m=document.getElementById("bMask");m.value=0;' +
+                 'm.dispatchEvent(new Event("input",{bubbles:true}))})()');
+    await evalJS('document.getElementById("bGo").click()');
+    let bdone = false;
+    for (let i = 0; i < 300 && !bdone; i++) {
+      await sleep(250);
+      bdone = !(await evalJS('document.getElementById("bProg").classList.contains("on")'));
+    }
+    chk('批量仿真完成', bdone && (await evalJS('GNSS_VIEW.batch.runs.length')) === 2,
+        '完成 ' + (await evalJS('GNSS_VIEW.batch.runs.length')) + ' 项');
+    chk('结果面板已显示',
+        await evalJS('document.getElementById("bResPanel").style.display') !== 'none');
+
+    const bs = await evalJS('GNSS_VIEW.batch.runs.map(r=>({' +
+      'name:r.name,mean:+r.stats.mean.toFixed(4),pmean:+r.stats.pmean.toFixed(4),' +
+      'drop:r.stats.drop,n:r.nEp}))');
+    if (!bs.length) { console.log('  批量无结果，跳过后续断言'); }
+    else {
+    console.log('  批量结果: ' + JSON.stringify(bs[0]));
+    chk('每个任务 5000 历元', bs.every(b => b.n === 5000));
+    chk('同一星历跑两次结果逐位相同（锚定与流水线确定）',
+        bs[0].mean === bs[1].mean && bs[0].pmean === bs[1].pmean,
+        bs.map(b => b.mean).join(' vs '));
+    chk('掩角 0° 的平均星数 > 单任务 15° 的 53.413',
+        bs[0].mean > 53.4, '' + bs[0].mean);
+    chk('过期率为 0（锚点落在覆盖内）', bs.every(b => b.drop === 0));
+    }
+
+    // 视图切换：四个 tab 都要能画出东西且不抛异常
+    for (const v of ['trend', 'dist', 'sum', 'delta']) {
+      await evalJS(`document.querySelector('#bTabs button[data-v="${v}"]').click()`);
+      await sleep(250);
+      const ok = await evalJS(`document.getElementById("bView").innerHTML.length > 40`);
+      chk('视图 ' + v + ' 渲染成功', ok);
+    }
+    // 切到汇总表核对列
+    await evalJS('document.querySelector(\'#bTabs button[data-v="sum"]\').click()');
+    await sleep(200);
+    chk('汇总表含过期率列', await evalJS(
+      'document.getElementById("bView").textContent.includes("过期率")'));
+
+    /* 纵轴口径切换。回归点是：Δ 口径下**基准自己也必须是 0**。
+     * 曾经写成 `counts - (i !== baseline ? base : 0)`，基准被特殊对待画了绝对值，
+     * 于是标着「Δ 相对基准」的图上基准线停在 ~66 而其余线在 0，肉眼可见地自相矛盾。*/
+    await evalJS('document.querySelector(\'#bTabs button[data-v="sum"]\').click()');
+    await sleep(200);
+    chk('非对比视图下纵轴切换按钮隐藏', await evalJS(
+      'document.getElementById("bScale").style.display === "none"'));
+    await evalJS('document.querySelector(\'#bTabs button[data-v="delta"]\').click()');
+    await sleep(200);
+    chk('对比曲线下纵轴切换按钮可见', await evalJS(
+      'document.getElementById("bScale").style.display !== "none"'));
+    // Δ 口径：每条序列减去基准；基准与自身的差必然逐点为 0
+    const dNote = await evalJS('document.getElementById("bNote").textContent');
+    chk('默认纵轴口径为 Δ 基线', dNote.includes('本任务可视星数'), dNote.slice(0, 30));
+    await evalJS('document.getElementById("bScale").click()');
+    await sleep(250);
+    const absState = await evalJS('(()=>{return {' +
+      'd:GNSS_VIEW.batch.delta,' +
+      'lbl:document.getElementById("bScale").textContent,' +
+      'note:document.getElementById("bNote").textContent}})()');
+    chk('切到绝对值后状态、按钮文案、说明三者同步',
+        absState.d === false && absState.lbl.includes('绝对值') &&
+        absState.note.includes('纵轴为可视星数') && !absState.note.includes('本任务可视星数'),
+        JSON.stringify(absState).slice(0, 90));
+    await evalJS('document.getElementById("bScale").click()');
+    await sleep(250);
+    chk('可切回 Δ 口径',
+        (await evalJS('document.getElementById("bNote").textContent')).includes('本任务可视星数'));
+
+    // 起始时刻提示语必须随模式变：早先它写死了「模式 ②」，模式 ① 下也在说模式 ②
+    const hint1 = await evalJS('document.getElementById("bHmsHint").textContent');
+    chk('模式① 的起始时刻提示描述锚定日期', hint1.includes('电文最多'), hint1.slice(0, 24));
+    await evalJS('document.querySelector(\'input[name="bmode"][value="2"]\').click()');
+    await sleep(200);
+    const hint2 = await evalJS('document.getElementById("bHmsHint").textContent');
+    chk('模式② 的起始时刻提示描述共用时刻', hint2.includes('共用'), hint2.slice(0, 24));
+    await evalJS('document.querySelector(\'input[name="bmode"][value="1"]\').click()');
+    await sleep(200);
+  }
+
+  console.log('\n=== 批量任务 · 模式 ②（固定星历 × 多轨迹）===');
+  {
+    await evalJS('document.querySelector(\'input[name=bmode][value="2"]\').click()');
+    await sleep(250);
+    chk('模式切换后固定文件标签改为星历',
+        (await evalJS('document.getElementById("bLblFixed").textContent')).includes('星历'),
+        await evalJS('document.getElementById("bLblFixed").textContent'));
+    const doc3 = await send('DOM.getDocument', { depth: -1 });
+    const setF3 = async (sel, fl, until) => {
+      const q = await send('DOM.querySelector', { nodeId: doc3.result.root.nodeId, selector: sel });
+      await send('DOM.setFileInputFiles', { files: fl, nodeId: q.result.nodeId });
+      for (let i = 0; i < 200; i++) { await sleep(200); if (await evalJS(until)) return true; }
+      return false;
+    };
+    chk('模式② 固定星历解析完成', await setF3('#bFixed', [RNX],
+      'GNSS_VIEW.batch.fixed && document.getElementById("bFixedName").textContent.includes("颗星")'));
+    chk('模式② 批量轨迹解析完成', await setF3('#bMany', [CSV, CSV],
+      'GNSS_VIEW.batch.many.length === 2 && !document.getElementById("bManyName").textContent.includes("解析中")'));
+
+    chk('模式② 任务数为 2', (await evalJS('GNSS_VIEW.batch.tasks.length')) === 2);
+    chk('模式② 所有任务共用同一 t0',
+        await evalJS('new Set(GNSS_VIEW.batch.tasks.map(t=>t.t0Gps)).size') === 1,
+        await evalJS('GNSS_VIEW.batch.tasks.map(t=>t.t0Gps).join(",")'));
+    chk('模式② 网格一致性标注为「一致」',
+        await evalJS('document.getElementById("bPrev").textContent.includes("一致")'));
+    chk('模式② 无网格不一致告警',
+        !(await evalJS('document.getElementById("bPrev").textContent.includes("不一致")')));
+
+    await evalJS('document.getElementById("bGo").click()');
+    let d2 = false;
+    for (let i = 0; i < 300 && !d2; i++) {
+      await sleep(250);
+      d2 = !(await evalJS('document.getElementById("bProg").classList.contains("on")'));
+    }
+    const r2 = await evalJS('GNSS_VIEW.batch.runs.map(r=>+r.stats.mean.toFixed(4))');
+    chk('模式② 完成 2 项', r2.length === 2, JSON.stringify(r2));
+    chk('模式② 同一轨迹两次结果相同', r2.length === 2 && r2[0] === r2[1], r2.join(' vs '));
+    chk('模式② 全部任务共用同一绝对时刻',
+        await evalJS('new Set(GNSS_VIEW.batch.runs.map(r=>r.t0Gps)).size') === 1);
+  }
+
+  console.log('\n=== 批量 CSV 导出 ===');
+  {
+    fs.rmSync(DL, { recursive: true, force: true });
+    fs.mkdirSync(DL, { recursive: true });
+    await evalJS('document.getElementById("bExpSum").click()');
+    let bf = [];
+    for (let i = 0; i < 40 && !bf.length; i++) { await sleep(250); bf = fs.readdirSync(DL).filter(f => f.endsWith('.csv')); }
+    chk('汇总 CSV 已下载', bf.length === 1, bf.join(','));
+    if (bf.length) {
+      const L = fs.readFileSync(path.join(DL, bf[0]), 'utf8').replace(/^﻿/, '').trim().split('\r\n');
+      chk('汇总表头含 drop_rate', L[0].includes('drop_rate'), L[0]);
+      chk('汇总 CSV 2 行数据', L.length === 3, L.length + ' 行');
+      chk('汇总 CSV 文件名含掩角', /^batch_summary_mask0\.0\.csv$/.test(bf[0]), bf[0]);
+    }
+    await evalJS('document.getElementById("bExpRuns").click()');
+    bf = [];
+    for (let i = 0; i < 60 && !bf.length; i++) { await sleep(250); bf = fs.readdirSync(DL).filter(f => f.startsWith('batch_runs')); }
+    chk('逐历元 CSV 已下载', bf.length === 1, bf.join(','));
+    if (bf.length) {
+      const L = fs.readFileSync(path.join(DL, bf[0]), 'utf8').replace(/^﻿/, '').trim().split('\r\n');
+      chk('逐历元表头正确',
+          L[0] === 'task,t0_utc,epoch,t_rel_s,visible_count,pdop,drop_rate', L[0]);
+      chk('逐历元 CSV = 2 任务 × 5000 历元 + 表头', L.length === 10001, L.length + ' 行');
+    }
+  }
+
+  console.log('\n=== 批量任务：单任务界面未被污染 ===');
+  {
+    chk('单任务状态仍完好', await evalJS(
+      'GNSS_VIEW.state.counts.length === 5000 && !document.getElementById("bRun").disabled'));
+    chk('关闭浮层后单任务图表仍可重绘',
+        await evalJS('(()=>{GNSS_VIEW.recompute();return true})()'));
+    await evalJS('document.getElementById("bClose").click()');
+    chk('浮层已关闭', !(await evalJS('document.getElementById("batch").classList.contains("on")')));
+  }
+
   chk('全流程无任何 JS 异常', errs.length === 0, errs.slice(0, 5).join(' | '));
 
   ws.close(); proc.kill();
