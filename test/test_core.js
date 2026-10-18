@@ -66,6 +66,226 @@ chk('首条历元 = 2026-09-26 00:00:00',
 chk('轨迹 5000 行 × 10 列', trace.n === 5000 && trace.head.length === 10,
     trace.n + ' 行, ' + trace.head.length + ' 列, NaN 单元 ' + trace.badCells);
 
+/* ---------- 1b. 列名映射：乱序 / 多余列 / 改名 / 缺列 / 分隔符 / 引号 ----------
+ * 这一段针对的是批量导入的现实：上游导出的轨迹列名不统一、顺序不定、还带一堆
+ * 用不上的列。以前只有「精确匹配七个规范名」这一条路，列名差一点就整批失败。
+ * 全部走文本路径：分隔符嗅探与引号规则都在 core 里，不依赖任何外部东西。 */
+console.log('\n=== 列名映射 ===');
+{
+  /* 按表头名给单元格赋值：七个必需列给可辨识的值，其余列一律给 12345，
+   * 这样「多余列被误认成必需列」会立刻在断言里现形。 */
+  const VAL = { Time: 0, Longitude: 121.4, Latitude: 31.2, Height: 900,
+                Yaw: 70, Pitch: 10, Roll: 3 };
+  const ALIAS_VAL = { '时间': 0, '经度': 121.4, '纬度': 31.2, '高程': 900, '高度': 900,
+                      '航向角': 70, '俯仰角': 10, '横滚角': 3 };
+  /* 表头可能带单位后缀（「Time (s)」），取值前先剥掉括号部分再查表 */
+  const valOf = h => {
+    const k = String(h).replace(/\s*[（(][^（()）]*[)）]\s*$/, '').trim();
+    return k in VAL ? VAL[k] : k in ALIAS_VAL ? ALIAS_VAL[k] : null;
+  };
+  const build = (head, n, d) => {
+    const j = (a) => a.join(d || ',');
+    const out = [j(head.map(String))];
+    for (let i = 0; i < n; i++) {
+      out.push(j(head.map(h => {
+        const v = valOf(String(h));
+        return v === null ? 12345 : (v === 0 ? i : v);   // Time 随行递增
+      })));
+    }
+    return out.join('\n') + '\n';
+  };
+  const F = ['Time', 'Longitude', 'Latitude', 'Height', 'Yaw', 'Pitch', 'Roll'];
+  /* 按 CSV 规则数列：引号内的逗号不算分隔符。导出断言全靠它 —— 直接 split(',')
+   * 会被 PRN_label 的 "{G01,G02}" 干扰，测出来的列数永远是错的。 */
+  const csvCols = s => {
+    let n = 1, q = false;
+    for (let i = 0; i < s.length; i++) {
+      const c = s[i];
+      if (c === '"') { if (q && s[i + 1] === '"') i++; else q = !q; }
+      else if (c === ',' && !q) n++;
+    }
+    return n;
+  };
+
+  // 乱序 + 多余列：真实世界里最常见的一种
+  {
+    const head = ['序号', 'Roll', '备注', 'Pitch', 'Latitude', 'Yaw', '高度',
+                  'Longitude', 'Time'];
+    const t = C.parseTraceCSV(build(head, 4));
+    chk('乱序 + 多余列：七列全部取对',
+        F.every(k => t.data[k][0] !== 12345 && isFinite(t.data[k][0])),
+        F.map(k => k + '=' + t.data[k][0]).join(' '));
+    chk('乱序：Latitude/Pitch/Roll 数值正确',
+        t.data.Latitude[0] === 31.2 && t.data.Pitch[0] === 10 && t.data.Roll[0] === 3);
+    chk('乱序：head 逐字保留原列名（导出靠它回写）',
+        t.head.join('|') === head.join('|'), t.head.join('|'));
+    /* 高度已被同义词映射到 Height，所以它不算多余列 —— extra 只剩两列 */
+    chk('乱序：extra 只收未被映射的列',
+        t.extra.length === 2 && t.extra.join('|') === '序号|备注', t.extra.join('|'));
+    chk('乱序：Time 仍严格递增', t.nonMono === 0 && t.data.Time[3] === 3);
+    /* 导出**不再回写原始行**：列由映射后的标准名决定，乱序/多余/中文列名一律不带出。
+     * 少了这个回写，上一版的缺陷（空格分隔文件整行塌成一列）就没有根了。 */
+    const out = C.epochCsvText(t.data, t.n, [7, 8, 9, 10], [1.5, 0, 2, 0], ['G01,G02', 'G03', '', 'R11']);
+    chk('乱序：导出表头就是标准 7 列 + 3 个产出物，与输入列名无关',
+        out[0] === 'Time,Longitude,Latitude,Height,Yaw,Pitch,Roll,Visible_Count,PDOP,PRN_label', out[0]);
+    chk('乱序：导出值来自解析后的标准列（不是按源文件列序回写）',
+        out[1] === '0,121.4,31.2,900,70,10,3,7,1.5000,"{G01,G02}"', out[1]);
+    chk('乱序：源文件的多余列不进导出',
+        out.join('\n').indexOf('序号') < 0 && out.join('\n').indexOf('备注') < 0);
+    chk('乱序：每行都是 10 列（PRN_label 的引号内逗号不算）',
+        out.every(l => csvCols(l) === 10), '第 1 行 ' + csvCols(out[1]) + ' 列');
+  }
+
+  // 中文列名：批量导入真正遇到的场景
+  {
+    const head = ['时间', '经度', '纬度', '高程', '航向角', '俯仰角', '横滚角', '地面速度'];
+    const det = C.detectColumns(head);
+    chk('中文列名：七列自动识别', det.missing.length === 0, det.missing.join(','));
+    const t = C.parseTraceCSV(build(head, 3));
+    chk('中文列名：数值取对',
+        t.data.Latitude[0] === 31.2 && t.data.Height[0] === 900 && t.data.Roll[0] === 3);
+    chk('中文列名：多余列进 extra', t.extra.join('|') === '地面速度', t.extra.join('|'));
+    chk('中文列名：head 仍是中文原名', t.head[0] === '时间', t.head[0]);
+  }
+
+  // 带单位括号
+  {
+    const head = ['Time (s)', 'Longitude (deg)', 'Latitude (deg)', 'Height (m)',
+                  'Yaw (deg)', 'Pitch (deg)', 'Roll (deg)'];
+    const t = C.parseTraceCSV(build(head, 2));
+    chk('括号单位被剥掉后仍能匹配',
+        t.data.Latitude[0] === 31.2 && t.data.Height[0] === 900);
+  }
+
+  // 缺列必须硬失败，且报错要点名缺哪几列
+  {
+    const head = F.filter(k => k !== 'Roll').concat(['备注']);
+    let msg = null;
+    try { C.parseTraceCSV(build(head, 2)); } catch (e) { msg = e.message; }
+    chk('缺列硬失败并点名', msg !== null && /Roll/.test(msg), msg);
+    chk('缺列报错文案与既有断言一致',
+        msg !== null && msg.indexOf('轨迹 CSV 缺少必需列') === 0, msg);
+  }
+
+  // 分隔符嗅探：制表符与分号
+  for (const d of ['\t', ';']) {
+    const t = C.parseTraceCSV(build(F, 3, d));
+    chk('分隔符嗅探 ' + (d === '\t' ? '制表符' : '分号'),
+        t.n === 3 && t.data.Latitude[0] === 31.2 && t.head.length === 7,
+        t.n + ' 行 ' + t.head.length + ' 列');
+  }
+
+  // 空格分隔：单空格与定宽对齐（列间若干空格补齐）都要认
+  {
+    const t = C.parseTraceCSV(build(F, 3, ' '));
+    chk('空格分隔（单空格）',
+        t.n === 3 && t.head.length === 7 && t.data.Latitude[0] === 31.2,
+        t.n + ' 行 ' + t.head.length + ' 列');
+    /* 定宽对齐：列宽不一，列间用不同个数的空格补齐。
+     * 按单空格切会在补齐处切出一堆空单元，这里要求一个都不许出现。 */
+    const pad = s => s.padEnd(11, ' ');
+    const lines = [F.map(pad).join('')];
+    for (let i = 0; i < 3; i++)
+      lines.push([String(i), '121.4', '31.2', '900', '70', '10', '3'].map(pad).join(''));
+    const t2 = C.parseTraceCSV(lines.join('\n') + '\n');
+    chk('空格分隔（定宽对齐）无空单元',
+        t2.n === 3 && t2.head.length === 7 && t2.head.every(h => h.trim() !== '') &&
+        t2.data.Latitude[0] === 31.2,
+        t2.n + ' 行, 表头=' + t2.head.join('|'));
+  }
+
+  // 空格不能抢走逗号：字段名内部带空格时，仍必须按逗号切。
+  // 若让空格参与竞争，`GPS Time, Longitude, …` 按空格切会得到 8 格（每个
+  // "Longitude," 都自带一个尾逗号），比逗号的 7 格还多，于是选错。
+  {
+    const t = C.parseTraceCSV(build(['GPS Time', 'Longitude', 'Latitude', 'Height',
+                                     'Yaw', 'Pitch', 'Roll'], 3, ', '));
+    chk('字段名带空格时仍按逗号切',
+        t.n === 3 && t.head.length === 7 && t.data.Latitude[0] === 31.2 &&
+        t.head[0] === 'GPS Time',
+        t.n + ' 行 ' + t.head.length + ' 列, 表头=' + t.head.join('|'));
+  }
+
+  // 引号内含逗号：train_set.csv 的 PRN_label 就是这种写法
+  {
+    const head = F.concat(['PRN_label']);
+    const lines = [head.join(',')];
+    for (let i = 0; i < 3; i++)
+      lines.push(head.map(h => h === 'PRN_label' ? '"{G01,G02}"' : (VAL[h] === 0 ? i : VAL[h])).join(','));
+    const t = C.parseTraceCSV(lines.join('\n') + '\n');
+    chk('引号内含逗号：不被劈成多列', t.n === 3 && t.head.length === 8,
+        t.n + ' 行 ' + t.head.length + ' 列');
+    /* 这一列是**多余列**（没被映射到任何标准名），所以不该出现在导出里 ——
+     * 引号连同里面的逗号一起被丢掉，正是「输出由映射决定」的直接后果。 */
+    const out = C.epochCsvText(t.data, t.n, [5, 6, 7], [1, 2, 3], ['G01', 'G02', 'G03']);
+    chk('引号内含逗号：多余列不外泄，且导出行恒为 10 列',
+        out.join('\n').indexOf('G01,G02') < 0 && out.every(l => csvCols(l) === 10), out[1]);
+  }
+
+  /* 用户报过的缺陷：单任务导出曾把源文件的原始行原样拼进 .csv。逗号文件恰好
+   * 还是合法 CSV（连引号都在），所以一直没暴露；换成空格/制表/分号分隔的文件，
+   * 整行会塌进一列 —— 表头完全正常，只有数据列错位。
+   * 现在导出只取解析后的标准 7 列，**根本不回读原始行**，于是分隔符不再有任何
+   * 余地：四种分隔符必须给出逐字相同的导出。 */
+  {
+    const base = C.epochCsvText(C.parseTraceCSV(build(F, 3, ',')).data, 3,
+                                [5, 6, 7], [1.25, 0, 3], ['G01,G02', 'G03', '']);
+    for (const [nm, sep] of [['空格', ' '], ['制表', '\t'], ['分号', ';'], ['竖线', '|']]) {
+      const t = C.parseTraceCSV(build(F, 3, sep));
+      const out = C.epochCsvText(t.data, t.n, [5, 6, 7], [1.25, 0, 3], ['G01,G02', 'G03', '']);
+      chk(nm + '分隔：导出与逗号文件逐字相同（导出不再回读原始行）',
+          out.join('\n') === base.join('\n'), out[1]);
+    }
+  }
+
+  // Excel 把空表头自动命名成数字 —— 那一格不是字符串，.toLowerCase 会 TypeError
+  {
+    const t = C.parseTraceCSV(build(F.concat(['']), 2));
+    chk('空表头不炸', t.n === 2 && t.data.Roll[0] === 3);
+    const det = C.detectColumns(F.concat([1]));
+    chk('数字表头不炸（Excel 自动命名）', det.missing.length === 0, det.missing.join(','));
+  }
+
+  // 用户手工指定映射优先于自动推断
+  {
+    const head = ['A', 'B', 'C', 'D', 'E', 'F', 'G'];
+    const forced = { Time: 3, Longitude: 1, Latitude: 0, Height: 6, Yaw: 2, Pitch: 5, Roll: 4 };
+    const det = C.detectColumns(head, forced);
+    chk('手工映射优先', det.missing.length === 0 && det.map.Latitude === 0,
+        JSON.stringify(det.map));
+  }
+
+  // 缩写列名：外部轨迹导出里极常见（用户实际给过 T/Longi/Lati/Hei 这种表头）
+  {
+    const head = ['T', 'Longi', 'Lati', 'Hei', 'Yaw', 'Pitch', 'Roll'];
+    const det = C.detectColumns(head);
+    chk('缩写列名 T/Longi/Lati/Hei 自动识别', det.missing.length === 0,
+        det.missing.join(',') || '7/7');
+  }
+
+  // 认不出时必须硬失败，把路指给面板 —— 不拿 0 顶替，也不静默少列
+  {
+    const head = ['v0', 'v1', 'v2', 'v3', 'v4', 'v5', 'v6', 'junk'];
+    const det = C.detectColumns(head);
+    chk('完全认不出时七列全部报缺', det.missing.length === 7,
+        det.missing.length + ' 列');
+    let threw = false;
+    try { C.parseTraceCSV(build(head, 2)); } catch (e) { threw = /缺少必需列/.test(e.message); }
+    chk('完全认不出时解析硬失败', threw);
+    /* 指认之后同一份文件必须立刻能用 —— 「指一次」的承诺。
+     * 这里自己造数据：build() 按已知表头名填值，认不出名字的列它填不了。 */
+    const lines = [head.join(',')];
+    for (let i = 0; i < 2; i++) lines.push([i, 121.4, 31.2, 900, 70, 10, 3, 999].join(','));
+    const t = C.parseTraceCSV(lines.join('\n') + '\n',
+      { Time: 0, Longitude: 1, Latitude: 2, Height: 3, Yaw: 4, Pitch: 5, Roll: 6 });
+    chk('指认映射后同一份文件解析成功',
+        t.n === 2 && t.data.Latitude[0] === 31.2 && t.data.Time[1] === 1 &&
+        t.extra.join('|') === 'junk' && t.badCells === 0,
+        t.n + ' 行, lat=' + t.data.Latitude[0] + ', extra=' + t.extra.join('|') +
+        ', NaN=' + t.badCells);
+  }
+}
+
 const bySys = {};
 rinex.sats.forEach(s => bySys[s.sys] = (bySys[s.sys] || 0) + 1);
 console.log('  每系统星数: ' + Object.keys(bySys).sort().map(k => k + bySys[k]).join('  '));
@@ -337,6 +557,59 @@ console.log('\n=== 前 4 个抽样历元（逐点，基准 t=0/125/250/375） ==
   });
 }
 
+/* ---------- 6b. 规范化导出：PRN_label 必须与 Visible_Count 对得上 ----------
+ * 导出改成「只用映射后的标准 7 列 + 3 个产出物」之后，PRN_label 的判据就成了
+ * 导出正确性的关键一环：它与 Visible_Count 用的是**两份代码**（一个是 solveAll
+ * 里内联的阈值比较，一个是 prnLabels）。一旦漂移，文件里会出现「说 7 颗、列 8 个
+ * PRN」这种自相矛盾的行，而且从数字上完全看不出错。 */
+console.log('\n=== 规范化导出：PRN_label 与 Visible_Count 自洽 ===');
+{
+  const names = rinex.sats.map(s => s.sys + s.prn);
+  const allIdx = []; for (let s = 0; s < nSat; s++) allIdx.push(s);
+  let bad = 0, worst = '';
+  for (const mask of [5, 15, 25]) {
+    const idx = allIdx;
+    const counts = new Int32Array(nEp), pdops = new Float64Array(nEp);
+    C.solveAll(los, nSat, nEp, idx, mask, counts, pdops, upRow);
+    const prn = C.prnLabels(los, nSat, nEp, upRow, idx, Math.sin(mask * C.D2R), names);
+    for (let e = 0; e < nEp; e++) {
+      const got = prn[e] ? prn[e].split(',').length : 0;
+      if (got !== counts[e]) { bad++; if (!worst) worst = 'mask ' + mask + ' 历元 ' + e + '：count=' + counts[e] + ' 但列了 ' + got; }
+    }
+  }
+  chk('三种掩角下 PRN_label 的个数 == Visible_Count（全程 15000 历元）', bad === 0, worst);
+
+  /* 只勾一颗星的子集也必须成立 —— 全选时若两条判据恰好一致，勾子集时未必 */
+  const gpsIdx = []; for (let s = 0; s < nSat; s++) if (satSys[s] === 'G') gpsIdx.push(s);
+  const gc = new Int32Array(nEp), gp = new Float64Array(nEp);
+  C.solveAll(los, nSat, nEp, gpsIdx, 15, gc, gp, upRow);
+  const gpPrn = C.prnLabels(los, nSat, nEp, upRow, gpsIdx, Math.sin(15 * C.D2R), names);
+  let bad2 = 0;
+  for (let e = 0; e < nEp; e++) {
+    const got = gpPrn[e] ? gpPrn[e].split(',').length : 0;
+    if (got !== gc[e]) bad2++;
+    /* 只有 GPS：列出的每个 PRN 都必须是 G* */
+    if (gpPrn[e].split(',').some(x => x[0] !== 'G')) bad2++;
+  }
+  chk('只勾 GPS 时同样自洽，且列出的全是 G*', bad2 === 0, bad2 + ' 处不一致');
+
+  /* 分组顺序：星座序号在 SYS_ORDER 里**单调不减**，同一星座内 PRN 升序 ——
+   * 实测基准 train_set.csv 就是这个写法，下游按它切星组才有意义。
+   * 这里查的是**性质**而不是复刻实现：谁按什么排都能过，只有排错才不过。 */
+  let ord = [];
+  const all15 = C.prnLabels(los, nSat, nEp, upRow, allIdx, Math.sin(15 * C.D2R), names);
+  for (let e = 0; e < nEp; e++) {
+    const cells = all15[e].split(',').filter(Boolean);
+    let prevSys = -1, prevPrn = '';
+    for (const c of cells) {
+      const si = C.SYS_ORDER.indexOf(c[0]);
+      if (si < prevSys || (si === prevSys && c.slice(1) < prevPrn)) ord = ['历元 ' + e + ' 处 ' + c + ' 顺序反了'];
+      prevSys = si; prevPrn = c.slice(1);
+    }
+  }
+  chk('PRN_label 按星座分组、组内按 PRN 升序（全程 5000 历元）', ord.length === 0, ord[0] || '');
+}
+
 /* ---------- 7. 性能：滑块重解耗时 ---------- */
 console.log('\n=== 实时性 ===');
 {
@@ -536,7 +809,85 @@ console.log('\n=== 批量任务纯函数 ===');
   chk('gridMatch 长度不同 -> 不匹配', C.gridMatch(g1, { first: 0, step: 1, n: 4000 }) === false);
 }
 
-/* ---------- 8. 页面自检面板 ---------- */
+/* ---------- 8. 导出成员名：文件名消毒 ---------- */
+console.log('\n=== 文件名消毒 safeName ===');
+{
+  /* 输入刻意不含分隔符：safeName 的第一步就是剥路径成分，混进 / 或 \ 会
+   * 把前缀整段吃掉（那是下一条断言单独验的语义，不是这里要测的东西）。 */
+  chk('Windows 禁字符全替换',
+      C.safeName('a:b*c?d"e<f>g|h') === 'a_b_c_d_e_f_g_h',
+      C.safeName('a:b*c?d"e<f>g|h'));
+  chk('控制字符替换',
+      C.safeName('a' + String.fromCharCode(1) + 'b' + String.fromCharCode(127) + 'c') === 'a_b_c', C.safeName('a' + String.fromCharCode(1) + 'b' + String.fromCharCode(127) + 'c'));
+  chk('连续空白折叠成单下划线（真实样本名）',
+      C.safeName('newtrace   -   副本 (2).dat') === 'newtrace_-_副本_(2).dat',
+      C.safeName('newtrace   -   副本 (2).dat'));
+  chk('中文与括号原样保留', C.safeName('航班 01') === '航班_01');
+  chk('RINEX 名干净时原样通过',
+      C.safeName('BRDM00DLR_S_20262690000_01D_MN') === 'BRDM00DLR_S_20262690000_01D_MN');
+  /* 成员名里绝不能有路径成分 —— 这不是显示问题，是 zip-slip：解压时可能写出
+   * 归档目录之外的文件。所以剥路径分隔符必须是消毒的第一步。 */
+  chk('路径成分被剥掉（zip-slip 防线）',
+      C.safeName('C:\\evil\\..\\..\\x.csv') === 'x.csv', C.safeName('C:\\evil\\..\\..\\x.csv'));
+  chk('尾点与尾空格被去掉（Windows 会静默丢弃）',
+      C.safeName('a. b . ') === 'a._b', C.safeName('a. b . '));
+  chk('纯点尾被去掉', C.safeName('a.b..') === 'a.b', C.safeName('a.b..'));
+  chk('全禁字符给保底名', C.safeName('///') === 'file', C.safeName('///'));
+  chk('空串 / null 给保底名',
+      C.safeName('') === 'file' && C.safeName(null) === 'file');
+  chk('"." 与 ".." 不原样放行', C.safeName('..') === 'file', C.safeName('..'));
+  chk('保留设备名被加前缀',
+      C.safeName('CON') === '_CON' && C.safeName('nul') === '_nul', C.safeName('CON'));
+  /* 截断在码点边界上收尾：按 UTF-16 码元切会把代理对劈成半个，TextEncoder
+   * 随后把它编码成 U+FFFD，成员名就与预期悄悄对不上了。 */
+  chk('截断后不重新暴露尾点',
+      !/[.\s]$/.test(C.safeName('a.'.repeat(80), 64)), C.safeName('a.'.repeat(80), 64).slice(-6));
+  chk('截断不劈开代理对（不产生替换字符）',
+      !/�/.test(C.safeName('\u{1F600}'.repeat(40), 64)));
+  chk('fileStem 去目录与扩展名',
+      C.fileStem('C:\\a\\b\\x.rnx') === 'x' && C.fileStem('newtrace.dat') === 'newtrace');
+  chk('fileStem 前导点不算扩展名', C.fileStem('.gitignore') === '.gitignore',
+      C.fileStem('.gitignore'));
+}
+
+/* ---------- 9. 导出成员名：A_on_B_mask<掩角>_<NN>.csv ---------- */
+console.log('\n=== 成员命名规则 taskCsvName ===');
+{
+  const TR = 'flight_shanghai_xian_5000.csv';
+  const RX = 'BRDM00DLR_S_20262690000_01D_MN.rnx';
+  /* 补零宽度 = total 的位数：2 项就是 1 位（_1/_2 本来就排得对），
+   * 10 项起才需要两位，100 项需要三位。所以这里用 total=12 才看得出补零。 */
+  chk('模式①：固定轨迹 _ 在_ 星历',
+      C.taskCsvName(TR, RX, 0, 1, 12) ===
+        'flight_shanghai_xian_5000_on_BRDM00DLR_S_20262690000_01D_MN_mask0.0_01.csv',
+      C.taskCsvName(TR, RX, 0, 1, 12));
+  /* 模式② 只是把固定侧换成星历，规则本身不分叉 —— B.fixed 的代理已经把
+   * 「固定侧是谁」这件事统一掉了，命名再按 mode 分一次反而是引入分叉的理由。 */
+  chk('模式② 同一规则（无需分叉）',
+      C.taskCsvName(RX, TR, 15, 1, 12) ===
+        'BRDM00DLR_S_20262690000_01D_MN_on_flight_shanghai_xian_5000_mask15.0_01.csv',
+      C.taskCsvName(RX, TR, 15, 1, 12));
+  chk('不超过 9 项时零填充宽度为 1', C.taskCsvName(TR, RX, 0, 2, 2).endsWith('_2.csv'),
+      C.taskCsvName(TR, RX, 0, 2, 2));
+  chk('掩角进名字（换掩角重导不覆盖）',
+      C.taskCsvName(TR, RX, 12.5, 1, 1).includes('_mask12.5_'),
+      C.taskCsvName(TR, RX, 12.5, 1, 1));
+  chk('同一份文件选两次仍不撞名（e2e 正是这么干的）',
+      C.taskCsvName(TR, TR, 0, 1, 2) !== C.taskCsvName(TR, TR, 0, 2, 2));
+  /* 不补零的话，100 项时文件管理器按名字排序是 1,10,11,2…，看着像丢了文件。 */
+  const ns = Array.from({ length: 100 }, (_, i) => C.taskCsvName(TR, RX, 0, i + 1, 100));
+  chk('100 项零填充到 3 位',
+      ns[0].endsWith('_001.csv') && ns[99].endsWith('_100.csv'),
+      ns[0].slice(-9) + ' … ' + ns[99].slice(-9));
+  chk('零填充后字典序 == 数值序',
+      ns.slice().sort().join('|') === ns.join('|'));
+  chk('成员名互不相同', new Set(ns).size === 100);
+  chk('成员名长度上限 < NTFS 单段 255',
+      C.taskCsvName('x'.repeat(300), 'y'.repeat(300), 45, 100, 100).length <= 160,
+      C.taskCsvName('x'.repeat(300), 'y'.repeat(300), 45, 100, 100).length + ' 字符');
+}
+
+/* ---------- 10. 页面自检面板 ---------- */
 console.log('\n=== 页面内 selfTest() ===');
 {
   const r = solve(15, ALL);

@@ -10,6 +10,9 @@ const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+/* zip 校验用：手写的压缩包里每个成员的 CRC 与长度，必须由一个**别人写的**
+ * 预言机来对，而不是拿页面自己的实现自证。Node 的 zlib 就是那个预言机。 */
+const zlib = require('zlib');
 
 const ROOT = path.join(__dirname, '..');
 const BUILD = path.join(ROOT, 'build');
@@ -17,6 +20,13 @@ const CHROME = 'C:/Program Files/Google/Chrome/Application/chrome.exe';
 const HTML = 'file:///' + path.join(ROOT, 'gnss_pdop_tool.html').replace(/\\/g, '/');
 const RNX = path.join(ROOT, 'samples', 'rnx', 'BRDM00DLR_S_20262690000_01D_MN.rnx');
 const CSV = path.join(ROOT, 'samples', 'traces', 'flight_shanghai_xian_5000.csv');
+/* 中文表头 + 乱序 + 多余列 + 单位括号的轨迹：单任务与批量两条路都要能被它打穿 */
+const CSV_CN = path.join(ROOT, 'test', 'fixtures', 'trace_cn_shuffled.csv');
+/* 列名彻底对不上任何别名（v0…v6 + 两个无用列）：只能靠人手指认映射 */
+const CSV_OPAQUE = path.join(ROOT, 'test', 'fixtures', 'trace_opaque.csv');
+/* 空格分隔（含多空格对齐、中文列名、含逗号的引号列名）：导入能认列，
+ * 导出也必须还原成真正的多列 CSV —— 修复前整行塌成一列 */
+const SPACE_TRACE = path.join(ROOT, 'test', 'fixtures', 'trace_space.dat');
 const DL = path.join(BUILD, 'e2e_download');
 const PORT = 9333;
 
@@ -24,9 +34,10 @@ fs.rmSync(DL, { recursive: true, force: true });
 fs.mkdirSync(DL, { recursive: true });
 fs.mkdirSync(BUILD, { recursive: true });
 
-let fails = 0;
+let fails = 0, total = 0;
 const chk = (name, ok, detail) => {
   if (!ok) fails++;
+  total++;
   console.log('  [' + (ok ? '通过' : '失败') + '] ' + name + (detail ? '   ' + detail : ''));
 };
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -135,6 +146,124 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   chk('平均星数 = Python 基准 53.413', Math.abs(st.avg - 53.413) < 0.05, '' + st.avg);
   chk('平均 PDOP = Python 基准 0.6224', Math.abs(st.pavg - 0.6224) < 0.002, '' + st.pavg);
 
+  /* ---------- 列名映射：中文表头 / 乱序 / 多余列 ----------
+   * 前面那轮跑的是规范列名的样本，结果对得上基准。这里换成一份列名全中文、
+   * 顺序打乱、混了两个多余列的轨迹 —— 用户真正会遇到的那种文件。
+   * 判据不是「解析成功」，而是**算出来的数跟基准一致**：列认错一个，
+   * 照样能解析出 5000 行、照样画得出图，只有数字会悄悄变掉。 */
+  console.log('\n=== 列名映射（中文表头 / 乱序 / 多余列）===');
+  {
+    const setF = async (sel, file) => {
+      const q = await send('DOM.querySelector', { nodeId: doc.result.root.nodeId, selector: sel });
+      await send('DOM.setFileInputFiles', { files: [file], nodeId: q.result.nodeId });
+      await sleep(1600);
+      await evalJS(`document.querySelector('${sel}').dispatchEvent(new Event('change'))`);
+      await sleep(1800);
+    };
+    await setF('#fCsv', CSV_CN);
+    chk('自动认出 7/7 列，面板保持收起',
+        await evalJS(`(()=>{const s=document.getElementById('nCsvSum');` +
+          `return s.textContent.indexOf('已识别 7/7')===0 &&` +
+          `document.getElementById('fColMap').hidden})()`),
+        await evalJS(`document.getElementById('nCsvSum').textContent`));
+    chk('head 保留原始中文列名（面板上要照原样告诉用户认成了哪一列）',
+        await evalJS(`${AVGE}.trace.head.join('|')===` +
+          `'备注|横滚角|纬度|序号|航向角|时间|经度|高度 (m)|俯仰角'`),
+        await evalJS(`${AVGE}.trace.head.join('|')`));
+    chk('多余列进了 extra', await evalJS(
+        `${AVGE}.trace.extra.join('|')==='备注|序号'`, await evalJS(`${AVGE}.trace.extra.join('|')`)));
+    chk('无 NaN 单元', await evalJS(`${AVGE}.trace.badCells===0`), await evalJS(`${AVGE}.trace.badCells`));
+    /* 数值口径必须跟原始样本逐位一致 —— 列认错的话这里立刻现形 */
+    const cn = await evalJS(`(()=>{const d=${AVGE}.trace.data;return [` +
+      `+d.Latitude[0].toFixed(6), +d.Longitude[0].toFixed(6), +d.Height[0].toFixed(3),` +
+      `+d.Yaw[0].toFixed(3), +d.Time[0].toFixed(1), ${AVGE}.trace.n]})()`);
+    chk('纬度/经度/高程/航向 与原样本逐位一致',
+        cn[0] === 31.236807 && cn[1] === 121.479216 && cn[2] === 4 && cn[3] === 70.228,
+        JSON.stringify(cn));
+    chk('Time 起点与行数正确', cn[4] === 0 && cn[5] === 5000, JSON.stringify(cn));
+
+    /* 重跑一遍：换列名不该改变任何仿真数字。
+     * 不能沿用第一次那个「等 bExp 解锁」的写法 —— 上一轮跑完它早就解锁了，
+     * 循环会立刻返回，读到的是新一轮还在跑、counts 全 0 的中间态。 */
+    await evalJS(`document.getElementById('bRun').click()`);
+    await sleep(400);
+    let done2 = false;
+    for (let i = 0; i < 240 && !done2; i++) {
+      await sleep(250);
+      done2 = await evalJS(`!${AVGE}.busy && !document.getElementById('bExp').disabled`);
+    }
+    const st2 = await evalJS(stats);
+    chk('换列名后平均星数不变（53.413）', Math.abs(st2.avg - 53.413) < 0.05, '' + st2.avg);
+    chk('换列名后平均 PDOP 不变（0.6224）', Math.abs(st2.pavg - 0.6224) < 0.002, '' + st2.pavg);
+    chk('全程无 JS 异常', errs.length === 0, errs.slice(0, 3).join(' | '));
+
+    /* 换回规范列名的样本，后续用例的前提就恢复了 */
+    await setF('#fCsv', CSV);
+    chk('换回规范列名后同样 7/7',
+        await evalJS(`document.getElementById('nCsvSum').textContent.indexOf('已识别 7/7')===0`),
+        await evalJS(`document.getElementById('nCsvSum').textContent`));
+  }
+
+  /* ---------- 列名完全认不出：面板必须出现，且指一次就能救回来 ----------
+   * 这一段守的是一个曾经写反的逻辑：面板只在解析**成功**时渲染，
+   * 于是「缺少必需列」这个最需要指路的场景反而看不见面板。 */
+  console.log('\n=== 认不出列名时由人工指认映射 ===');
+  {
+    const setF = async (sel, file) => {
+      const q = await send('DOM.querySelector', { nodeId: doc.result.root.nodeId, selector: sel });
+      await send('DOM.setFileInputFiles', { files: [file], nodeId: q.result.nodeId });
+      await sleep(1600);
+      await evalJS(`document.querySelector('${sel}').dispatchEvent(new Event('change'))`);
+      await sleep(1800);
+    };
+    await setF('#fCsv', CSV_OPAQUE);
+    chk('认不出时面板自动展开',
+        await evalJS('!document.getElementById("fColMap").hidden'),
+        await evalJS(`document.getElementById('fColMap').hidden`));
+    chk('摘要点名缺哪几列',
+        await evalJS(`document.getElementById('nCsvSum').textContent.indexOf('缺 7 列')===0`),
+        await evalJS(`document.getElementById('nCsvSum').textContent`));
+    chk('七个下拉都列出了这份文件的真实表头',
+        await evalJS(`document.querySelectorAll('#fColMap select').length===7 && ` +
+          `[...document.querySelectorAll('#fColMap select')][0].length===10`),
+        await evalJS(`[...document.querySelectorAll('#fColMap select')][0]
+          .options.length + ' 个选项'`));
+    chk('认不出时不进仿真（硬失败，不拿 0 顶替）',
+        await evalJS('GNSS_VIEW.state.trace && ' +
+          `document.getElementById('nCsv').textContent.includes('解析失败')`),
+        await evalJS(`document.getElementById('nCsv').textContent`));
+
+    /* 人工指认：v0=Time v1=Longitude … v6=Roll。改最后一个也触发重解析，
+     * 七下点完应当立刻解析成功 —— 这是「指一次」承诺的全部内容。 */
+    const picked = await evalJS(`(async () => {
+      const want = {Time:0,Longitude:1,Latitude:2,Height:3,Yaw:4,Pitch:5,Roll:6};
+      const sels = [...document.querySelectorAll('#fColMap select')];
+      for (const s of sels) s.value = String(want[s.dataset.f]);
+      sels[sels.length-1].dispatchEvent(new Event('change'));   // 只派发一次
+      for (let i=0;i<80;i++){ await new Promise(r=>setTimeout(r,150));
+        if (GNSS_VIEW.state.trace &&
+            document.getElementById('nCsv').textContent.indexOf('解析失败')<0) return true; }
+      return false;
+    })()`);
+    chk('指认映射后解析成功', picked, await evalJS(`document.getElementById('nCsv').textContent`));
+    chk('人工映射取到的数与原样本逐位一致',
+        await evalJS(`(()=>{const d=GNSS_VIEW.state.trace.data;return ` +
+          `d.Latitude[0]===31.236807 && d.Longitude[0]===121.479216 && ` +
+          `d.Height[0]===4 && d.Yaw[0]===70.228 && d.Time[0]===0})()`),
+        await evalJS('GNSS_VIEW.state.trace.data.Latitude[0]+","+GNSS_VIEW.state.trace.data.Time[0]'));
+    chk('认全后面板自动收起',
+        await evalJS(`document.getElementById('nCsvSum').textContent.indexOf('已识别 7/7')===0 && ` +
+          `document.getElementById('fColMap').hidden`),
+        await evalJS(`document.getElementById('nCsvSum').textContent`));
+    chk('无用列进了 extra',
+        await evalJS(`GNSS_VIEW.state.trace.extra.join('|')==='junk_a|junk_b'`),
+        await evalJS(`GNSS_VIEW.state.trace.extra.join('|')`));
+    chk('全程无 JS 异常', errs.length === 0, errs.slice(0, 3).join(' | '));
+
+    /* 恢复：换回规范样本，后续用例的前提才回来 */
+    await setF('#fCsv', CSV);
+  }
+
   console.log('\n=== 掩角滑块实时响应 ===');
   const sweep = await evalJS(`(async () => {
     const m = document.getElementById('mask'), out = [];
@@ -184,8 +313,10 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   await sleep(800);
   const failed = await evalJS(`(()=>[...document.querySelectorAll('#tests span.r')]
       .map(s => s.closest('tr').children[1].textContent))()`);
-  const total = await evalJS(`document.querySelectorAll('#tests tr').length`);
-  chk('页面自检全部通过（' + total + ' 项）', failed.length === 0,
+  /* 名字别叫 total：模块级有一个同名计数器在统计断言条数，被这里遮蔽的话，
+   * 后面每一节都在加错的那个变量，末尾报出来的总数就成了页面自检的条数。 */
+  const nSelf = await evalJS(`document.querySelectorAll('#tests tr').length`);
+  chk('页面自检全部通过（' + nSelf + ' 项）', failed.length === 0,
       failed.length ? '失败: ' + failed.join('; ')
         : await evalJS('(()=>{const L=document.getElementById("log").textContent.trim().split("\\n");' +
                        'return L.find(x=>x.includes("自检"))||L[L.length-1]})()'));
@@ -478,20 +609,34 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
       ovlBase2.h === ovlBase.h && ovlBase2.c0 === ovlBase.c0 && ovlBase2.c2498 === ovlBase.c2498,
       '历元 0 星数 ' + ovlBase2.c0 + '，历元 2498 星数 ' + ovlBase2.c2498);
 
-  // 性能：drawAll() 里的大头是两张星空图的贪心标号，不是叠加曲线。
-  // 所以要断言的是**相对开销**（叠加只多一趟 O(n) 的 min/max 扫描），
-  // 钉一个绝对毫秒数会把星空图的波动算到叠加头上。
-  const perfOff = await evalJS(`(()=>{GNSS_VIEW.ovlSet([]);
-      const V=GNSS_VIEW, ts=[];
-      for(let k=0;k<25;k++){const t0=performance.now(); V.drawAll(); ts.push(performance.now()-t0);}
-      ts.sort((a,b)=>a-b); return ts[12]})()`);
-  const perfOn = await evalJS(`(()=>{const V=GNSS_VIEW, ts=[];
-      for(let k=0;k<25;k++){const t0=performance.now(); V.drawAll(); ts.push(performance.now()-t0);}
-      ts.sort((a,b)=>a-b); return ts[12]})()`);
-  chk('叠加三条曲线不显著拖慢重绘（中位开销 < 基线 1.5 倍 + 0.5 ms）',
-      perfOn < perfOff * 1.5 + 0.5 && perfOn < 8,
+  /* 性能：drawAll() 里的大头是两张星空图的贪心标号，不是叠加曲线，所以不能拿
+   * 「重绘总时长」当基线去比比例 —— 那个基线只有 2~3 ms，1.5 倍 + 0.5 ms 的余量
+   * 实际只剩 0.3 ms，早晚会因机器噪声翻面。
+   *
+   * 叠加的真实成本是**描线本身**：视窗复位到全景后，三条曲线各要描 5000 段
+   * （共 15000 段）外加三趟 min/max 扫描，~2 ms 就是这个量级的应有开销，
+   * 不是回归。所以这里只断言两件有意义的事：
+   *   1) 绝对重绘时长离一帧（16.7 ms）足够远 —— 这才是用户能感知的；
+   *   2) 叠加的**增量**有界（< 3 ms，约合一帧的 18%）。
+   * 两组样本必须**交错**采集：先后两块跑的话，机器负载在两块之间的漂移会整体
+   * 偏到某一组，那测到的是采样顺序的偏差，不是叠加的开销。 */
+  /* 中位数在 Node 这边取：页面里数出样本就行，写死下标迟早算错桶的大小
+   * （上一版就栽在这儿 —— 24 次交错采样落成 12+12，却还取 [12]）。 */
+  const perf = await evalJS(`(()=>{const V=GNSS_VIEW, K=['Yaw','Pitch','Roll'], on=[], off=[];
+      for(let k=0;k<24;k++){
+        const on_=k%2===1;
+        V.ovlSet(on_?K:[]);                       // 切换本身要重画，但那一下不计时
+        const t0=performance.now(); V.drawAll();  // 只计这一帧
+        (on_?on:off).push(performance.now()-t0);
+      }
+      return {on:on, off:off};})()`);
+  const med = a => a.slice().sort((x, y) => x - y)[a.length >> 1];
+  const perfOff = med(perf.off), perfOn = med(perf.on);
+  chk('叠加三条曲线不拖慢重绘（绝对 < 8 ms，且增量 < 3 ms）',
+      perfOn < 8 && perfOn - perfOff < 3,
       '未叠加 ' + perfOff.toFixed(2) + ' ms -> 叠加三条 ' + perfOn.toFixed(2) +
-      ' ms（差 ' + (perfOn - perfOff).toFixed(2) + ' ms）');
+      ' ms（增量 ' + (perfOn - perfOff).toFixed(2) + ' ms；视窗 ' +
+      '0-4999，即 3×5000 段描线）');
 
   // 收工：全部取消勾选，后续星空图断言不受右轴影响
   await evalJS('GNSS_VIEW.ovlSet([])');
@@ -1004,6 +1149,20 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
       `掩角 40° -> ${n40} 颗，掩角 15° -> ${sky.count} 颗（同一历元 ${sky.ep}）`);
 
   console.log('\n=== 导出 CSV（掩角 15°、全部 7 系统）===');
+  /* 单任务导出首行的前 9 个裸字段，留给后面 zip 段做交叉比对：
+   * 同一条轨迹、同一锚点，只是掩角不同（批量跑的是 0°）。 */
+  let EXPORT_ROW0 = null;
+  /* 按 CSV 规则数列（引号内的逗号不算）—— 直接 split(',') 会被 PRN_label 的
+   * "{G05,G11,…}" 干扰，测出来的列数永远是错的。整个 e2e 共用。 */
+  const csvCols = s => {
+    let n = 1, q = false;
+    for (let i = 0; i < s.length; i++) {
+      const c = s[i];
+      if (c === '"') { if (q && s[i + 1] === '"') i++; else q = !q; }
+      else if (c === ',' && !q) n++;
+    }
+    return n;
+  };
   await evalJS('document.getElementById("bExp").click()');
   let files = [];
   for (let i = 0; i < 40 && !files.length; i++) { await sleep(250); files = fs.readdirSync(DL).filter(f => f.endsWith('.csv')); }
@@ -1015,14 +1174,34 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     const traceHead = fs.readFileSync(CSV, 'utf8').replace(/^﻿/, '').split(/\r?\n/)[0].trim();
     chk('文件名含掩角与星座标记', /^gnss_pdop_mask15\.0_CEGIJRS\.csv$/.test(files[0]), files[0]);
     chk('UTF-8 BOM（Excel 友好）', buf[0] === 0xEF && buf[1] === 0xBB && buf[2] === 0xBF);
-    chk('表头 = 原始 10 列 + Visible_Count + PDOP + PRN_label',
-        lines[0] === traceHead + ',Visible_Count,PDOP,PRN_label', lines[0]);
+    /* 规范化：列只由映射决定，与源文件的列名/列序/列数无关。
+     * 样本有 10 列（含 Time,Longitude,Latitude,Height,Yaw,Pitch,Roll 之外的
+     * Nstats/PDOP/v_spare），导出必须只剩标准 7 列 + 3 个产出物。 */
+    chk('表头 = 标准 7 列 + 3 个产出物（与源文件 10 列无关）',
+        lines[0] === 'Time,Longitude,Latitude,Height,Yaw,Pitch,Roll,Visible_Count,PDOP,PRN_label',
+        lines[0]);
+    chk('源文件的多余列不进导出',
+        lines.join('\n').indexOf('GroundSpeed') < 0 && lines.join('\n').indexOf('Airspeed') < 0 &&
+        lines.join('\n').indexOf('TrackAngle') < 0,
+        '源表头 ' + traceHead);
+    chk('每行都是 10 列',
+        lines.every(l => csvCols(l) === 10), '首行 ' + csvCols(lines[1]) + ' 列');
     // PRN_label 内含逗号，必须加引号；否则解析器会把一行拆成多列
     chk('PRN_label 列带引号且首行非空',
         /"\{[A-Z]\d\d(,[A-Z]\d\d)*\}"$/.test(lines[1]),
         lines[1].slice(-70));
+    /* PRN_label 的个数必须与 Visible_Count 对得上：导出里这是唯一一处
+     * 「同一事实说了两遍」的地方，两遍不一致就是真的错了。 */
+    let mism = 0, mrow = '';
+    for (const l of lines.slice(1)) {
+      const c = l.split(',');
+      const n = c.slice(9).join(',').replace(/"/g, '').replace(/^\{|\}$/g, '');
+      if ((n ? n.split(',').length : 0) !== Number(c[7])) { mism++; if (!mrow) mrow = l.slice(0, 60); }
+    }
+    chk('PRN_label 的个数 == Visible_Count（全部 5000 行）', mism === 0, mism + ' 行不符：' + mrow);
     chk('行数 = 5000 数据行', lines.length === 5001,
         (lines.length - 1) + ' 行，' + (buf.length / 1024).toFixed(0) + ' KB');
+    EXPORT_ROW0 = lines[1].split(',').slice(0, 9);   // 前 9 个裸字段（Time…PDOP）
     fs.copyFileSync(got, path.join(BUILD, 'e2e_export.csv'));
     console.log('  已另存 build/e2e_export.csv 供 Python 独立逐历元核对');
   }
@@ -1207,6 +1386,37 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     chk('模式② 批量轨迹解析完成', await setF3('#bMany', [CSV, CSV],
       'GNSS_VIEW.batch.many.length === 2 && !document.getElementById("bManyName").textContent.includes("解析中")'));
 
+    /* 批量侧的核心：一份中文表头定下映射，后面那份直接套用。
+     * 两份文件内容相同，所以两行任务的网格必须一模一样 —— 映射没串的话，
+     * 第二份要么解析失败，要么用错列算出另一组数。 */
+    chk('模式② 中文表头轨迹批量解析完成',
+        await setF3('#bMany', [CSV_CN, CSV_CN],
+          'GNSS_VIEW.batch.many.length === 2 && ' +
+          '!document.getElementById("bManyName").textContent.includes("解析中")'));
+    chk('批量映射面板认出 7/7 且默认收起',
+        await evalJS(`document.getElementById('bColMapSum').textContent` +
+          `.indexOf('已识别 7/7')===0 && document.getElementById('bColMap').hidden`),
+        await evalJS(`document.getElementById('bColMapSum').textContent`));
+    chk('批量两份都无 NaN',
+        await evalJS('GNSS_VIEW.batch.many.every(m=>m.obj && m.obj.badCells===0)'),
+        await evalJS('GNSS_VIEW.batch.many.map(m=>m.obj?m.obj.badCells:m.err).join("|")'));
+    chk('批量两份网格完全一致（映射被复用，没有各认各的）',
+        await evalJS('(()=>{const a=GNSS_VIEW.batch.many.map(m=>m.obj.data.Latitude[0]);' +
+          'return a.length===2 && a[0]===a[1] && a[0]===31.236807})()'),
+        await evalJS('GNSS_VIEW.batch.many.map(m=>m.obj.data.Latitude[0]).join(",")'));
+    chk('批量表头签名一致，不报「表头不一致」',
+        await evalJS('GNSS_VIEW.batch.many.every(m=>!m.mismatch) && ' +
+          '!document.getElementById("bManyName").textContent.includes("表头不一致")'),
+        await evalJS(`document.getElementById('bManyName').textContent`));
+    chk('批量导出仍保留中文表头',
+        await evalJS('GNSS_VIEW.batch.many[0].obj.head[0]==="备注"'),
+        await evalJS('GNSS_VIEW.batch.many[0].obj.head.join("|")'));
+
+    /* 换回规范表头，后续用例的前提恢复 */
+    chk('换回规范表头后批量恢复', await setF3('#bMany', [CSV, CSV],
+      'GNSS_VIEW.batch.many.length === 2 && ' +
+      'GNSS_VIEW.batch.many.every(m=>m.obj && m.obj.head[0]==="Time")'));
+
     chk('模式② 任务数为 2', (await evalJS('GNSS_VIEW.batch.tasks.length')) === 2);
     chk('模式② 所有任务共用同一 t0',
         await evalJS('new Set(GNSS_VIEW.batch.tasks.map(t=>t.t0Gps)).size') === 1,
@@ -1252,6 +1462,126 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
       chk('逐历元表头正确',
           L[0] === 'task,t0_utc,epoch,t_rel_s,visible_count,pdop,drop_rate', L[0]);
       chk('逐历元 CSV = 2 任务 × 5000 历元 + 表头', L.length === 10001, L.length + ' 行');
+    }
+
+    /* ---------- 分任务 ZIP ----------
+     * 上面的合并表断言原样保留着，本身就是「没顺手改坏老路」的证据。
+     * 这里验的是另一条路：一份 zip，每个任务一个 csv。
+     * 关键在于**真的把它解开**：只断言「下载成功」的话，一个偏移写错但恰好
+     * 能被解压的 zip 也能蒙混过关，所以每个成员的 CRC 都拿 Node 的 zlib 对照。 */
+    const nm = await evalJS(
+      '[GNSS_VIEW.exp.safeName("a:b*c?d\\"e<f>g|h"),' +
+      ' GNSS_VIEW.exp.safeName("newtrace   -   \\u526f\\u672c (2).dat"),' +
+      ' GNSS_VIEW.exp.taskCsvName("flight_shanghai_xian_5000.csv",' +
+      ' "BRDM00DLR_S_20262690000_01D_MN.rnx",0,1,12)]');
+    chk('禁字符全替换', nm[0] === 'a_b_c_d_e_f_g_h', nm[0]);
+    chk('空白折叠且保留中文', nm[1] === 'newtrace_-_副本_(2).dat', nm[1]);
+    chk('成员名按 A_on_B_mask<掩角>_<NN> 拼', nm[2] ===
+        'flight_shanghai_xian_5000_on_BRDM00DLR_S_20262690000_01D_MN_mask0.0_01.csv', nm[2]);
+
+    fs.rmSync(DL, { recursive: true, force: true });   // 单独一段：Chrome 遇同名会追加 " (1)"
+    fs.mkdirSync(DL, { recursive: true });
+    await evalJS('document.getElementById("bExpZip").click()');
+    let zf = [];
+    for (let i = 0; i < 160 && !zf.length; i++) { await sleep(250); zf = fs.readdirSync(DL).filter(f => f.endsWith('.zip')); }
+    chk('ZIP 已下载（一次下载拿到全部任务）', zf.length === 1, zf.join(','));
+    chk('ZIP 文件名带模式与掩角，且不以 batch_runs 开头',
+        zf.length === 1 && /^batch_zip_mode[12]_mask0\.0\.zip$/.test(zf[0]), zf[0]);
+    chk('打包后进度行说明每任务一份', await evalJS(
+      'document.getElementById("bProgText").textContent.includes("每任务一份")'),
+      await evalJS('document.getElementById("bProgText").textContent'));
+
+    if (zf.length) {
+      const buf = fs.readFileSync(path.join(DL, zf[0]));
+      /* 手写中央目录解析 —— Node 没有内置 zip 读库。顺带**独立**校验偏移与长度
+       * 字段：只断言解压成功的话，偏移错了也可能凑巧解出东西。 */
+      let e = -1;
+      for (let i = buf.length - 22; i >= Math.max(0, buf.length - 22 - 65535); i--) {
+        if (buf.readUInt32LE(i) === 0x06054b50) { e = i; break; }
+      }
+      chk('末尾 22 字节就是 EOCD', e >= 0 && e + 22 === buf.length,
+          'EOCD@' + e + ' 长度 ' + buf.length);
+      const ENT = [];
+      if (e >= 0) {
+        const nEnt = buf.readUInt16LE(e + 10), cdOff = buf.readUInt32LE(e + 16),
+              cdSz = buf.readUInt32LE(e + 12);
+        chk('EOCD 条目数 = 2', nEnt === 2, nEnt + '');
+        chk('中央目录紧贴 EOCD', cdOff + cdSz === e, (cdOff + cdSz) + ' vs ' + e);
+        let p = cdOff;
+        for (let i = 0; i < nEnt; i++) {
+          if (buf.readUInt32LE(p) !== 0x02014b50) break;
+          const flags = buf.readUInt16LE(p + 8), method = buf.readUInt16LE(p + 10);
+          const nl = buf.readUInt16LE(p + 28), el = buf.readUInt16LE(p + 30),
+                cl = buf.readUInt16LE(p + 32);
+          const ent = {
+            flags, method, crc: buf.readUInt32LE(p + 16),
+            csize: buf.readUInt32LE(p + 20), usize: buf.readUInt32LE(p + 24),
+            lho: buf.readUInt32LE(p + 42),
+            name: buf.slice(p + 46, p + 46 + nl).toString('utf8')
+          };
+          chk('成员名 UTF-8 标志位已置（中文名必需）', (ent.flags & 0x0800) !== 0, ent.name);
+          chk('未用数据描述符（长度已预先算好）', (ent.flags & 0x0008) === 0, ent.name);
+          chk('本地头偏移指向 0x04034b50', buf.readUInt32LE(ent.lho) === 0x04034b50, ent.name);
+          /* 定位数据必须用**本地头**里的 name/extra 长度，不是中央目录的 ——
+           * 两者今天相同，但只读中央目录的解包器离「解错」只差一个 extra 字段。 */
+          const ln = buf.readUInt16LE(ent.lho + 26), le = buf.readUInt16LE(ent.lho + 28);
+          const d0 = ent.lho + 30 + ln + le;
+          const raw = buf.slice(d0, d0 + ent.csize);
+          let data;
+          try { data = ent.method === 8 ? zlib.inflateRawSync(raw) : raw; }
+          catch (err) { chk('成员可解压', false, ent.name + ' ' + err.message); break; }
+          ent.text = data.toString('utf8');
+          chk('解压后长度 = usize', data.length === ent.usize,
+              ent.name + ' ' + data.length + ' vs ' + ent.usize);
+          chk('CRC 与 Node zlib.crc32 一致（独立预言机）',
+              (zlib.crc32(data) >>> 0) === (ent.crc >>> 0), ent.name);
+          chk('成员带 BOM（Excel 才会按 UTF-8 打开中文）',
+              ent.text.charCodeAt(0) === 0xFEFF, ent.name);
+          ENT.push(ent);
+          p += 46 + nl + el + cl;
+        }
+      }
+      chk('ZIP 里有 2 个成员', ENT.length === 2, ENT.map(x => x.name).join(' | '));
+      if (ENT.length === 2) {
+        /* 此刻是模式②：固定星历、多条轨迹，且两份轨迹是**同一个文件**选了两次 ——
+         * 两者主干完全相同，正是序号唯一性的天然测试。
+         * 只有 2 个任务，补零宽度 = 位数(2) = 1，所以是 _1/_2 而不是 _01/_02。 */
+        const EXP = i => 'BRDM00DLR_S_20262690000_01D_MN_on_flight_shanghai_xian_5000_mask0.0_' + i + '.csv';
+        chk('成员名 = A_on_B_mask<掩角>_<NN>，NN 补零',
+            ENT[0].name === EXP(1) && ENT[1].name === EXP(2),
+            ENT.map(x => x.name).join(' | '));
+        ENT.forEach(ent => {
+          const L = ent.text.replace(/^﻿/, '').trim().split('\r\n');
+          chk('每份 = 5000 历元 + 表头', L.length === 5001, ent.name + ' ' + L.length + ' 行');
+          /* 每个任务的 CSV 与单任务导出**同一种形状**：标准 7 列 + 3 个产出物。
+           * 文件名已经带着 A_on_B_mask<掩角>，任务名/固定文件名/起始时刻在一份
+           * 文件内全是常量，所以不再占列。 */
+          chk('成员表头 = 标准 7 列 + 3 个产出物（与单任务导出同一形状）',
+              L[0] === 'Time,Longitude,Latitude,Height,Yaw,Pitch,Roll,Visible_Count,PDOP,PRN_label',
+              L[0]);
+          chk('成员每行 10 列', L.slice(1, 50).every(l => csvCols(l) === 10), L[1].slice(0, 60));
+          /* 交叉比对：批量成员与单任务导出喂的是**同一个轨迹文件**，所以前 7 列
+           * 必须逐位相同（只认映射后的标准列，两条路取到的就该是同一批数）。
+           * Visible_Count 则必然 >= —— 批量这批跑的是 0° 掩角，可见星只会更多。 */
+          if (EXPORT_ROW0) {
+            const z0 = L[1].split(',');
+            chk('批量成员与单任务导出取到同一组标准列（掩角不同不影响轨迹侧）',
+                z0.slice(0, 7).join(',') === EXPORT_ROW0.slice(0, 7).join(','),
+                z0.slice(0, 7).join(',') + ' vs ' + EXPORT_ROW0.slice(0, 7).join(','));
+            chk('掩角 0° 的成员可见星不少于 15° 的单任务导出',
+                Number(z0[7]) >= Number(EXPORT_ROW0[7]),
+                z0[7] + ' vs ' + EXPORT_ROW0[7]);
+          }
+          chk('成员内 PRN_label 的个数 == Visible_Count',
+              L.slice(1, 200).every(l => {
+                const c = l.split(',');
+                const n = c.slice(9).join(',').replace(/"/g, '').replace(/^\{|\}$/g, '');
+                return (n ? n.split(',').length : 0) === Number(c[7]);
+              }), L[1].slice(-60));
+        });
+        chk('同一份轨迹选两次，两份内容逐字一致', ENT[0].text === ENT[1].text);
+      }
+      fs.copyFileSync(path.join(DL, zf[0]), path.join(BUILD, 'e2e_export_zip.zip'));
     }
   }
 
@@ -1556,10 +1886,63 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     chk('浮层已关闭', !(await evalJS('document.getElementById("batch").classList.contains("on")')));
   }
 
+  /* 用户报过的真缺陷：单任务导出曾把源文件的原始行原样拼进 .csv。逗号文件恰好
+   * 还是合法 CSV（连引号都在），所以一直没暴露；换成空格分隔的 .dat，整行会塌进
+   * 一列 —— 表头看着完全正常，只有数据列错位。
+   * 现在导出只取解析后的标准列，根本不回读原始行，分隔符不再有任何余地。
+   * 放在最后：本段会换掉单任务轨迹，而上面 :1861 要断言 counts.length === 5000。 */
+  console.log('\n=== 导出 CSV（空格分隔的轨迹文件）===');
+  {
+    fs.rmSync(DL, { recursive: true, force: true });
+    fs.mkdirSync(DL, { recursive: true });
+    const doc2 = await send('DOM.getDocument', { depth: -1 });
+    const q = await send('DOM.querySelector', { nodeId: doc2.result.root.nodeId, selector: '#fCsv' });
+    await send('DOM.setFileInputFiles', { files: [SPACE_TRACE], nodeId: q.result.nodeId });
+    for (let i = 0; i < 40; i++) {
+      await sleep(250);
+      if (await evalJS('!!(GNSS_VIEW.state.trace)')) break;
+    }
+    chk('空格分隔轨迹已载入（11 列按空白切认得出）', await evalJS(
+        'GNSS_VIEW.state.trace.head.length === 11'),
+        await evalJS('document.getElementById("nCsv").textContent'));
+    await evalJS('document.getElementById("bRun").click()');
+    for (let i = 0; i < 80; i++) {
+      await sleep(250);
+      if (await evalJS('!!GNSS_VIEW.state.counts')) break;
+    }
+    await evalJS('document.getElementById("bExp").click()');
+    let f2 = [];
+    for (let i = 0; i < 40 && !f2.length; i++) { await sleep(250); f2 = fs.readdirSync(DL).filter(f => f.endsWith('.csv')); }
+    chk('空格分隔轨迹：CSV 已下载', f2.length === 1, f2.join(','));
+    if (f2.length) {
+      const L = fs.readFileSync(path.join(DL, f2[0]), 'utf8')
+                 .replace(/^﻿/, '').trim().split('\r\n');
+      const src = fs.readFileSync(SPACE_TRACE, 'utf8').split(/\r?\n/);
+      const srcRow0 = src[1].trim().split(/\s+/);   // Time..Roll 对应前 7 列
+      /* 表头与逗号文件样本**逐字相同** —— 这是「输出规范由映射决定」的硬指标：
+       * 源文件是 11 列空格分隔、表头含中文、列序还和标准名一致，但它多出来的
+       * v_spare / Nstats_label / PDOP_label / 备注 全部不外泄。 */
+      chk('表头与逗号文件样本逐字相同（输入形态不影响输出规范）',
+          L[0] === 'Time,Longitude,Latitude,Height,Yaw,Pitch,Roll,Visible_Count,PDOP,PRN_label', L[0]);
+      chk('源文件的多余列不进导出（含中文列名）',
+          L.join('\n').indexOf('v_spare') < 0 && L.join('\n').indexOf('Nstats_label') < 0 &&
+          L.join('\n').indexOf('备注') < 0 && L.join('\n').indexOf('落地段') < 0);
+      chk('每行 10 列（修复前数据行只有 1 列）',
+          L.slice(1).every(l => csvCols(l) === 10), '首行 ' + csvCols(L[1]) + ' 列');
+      chk('映射后的标准 7 列取自源文件对应的 7 个 token',
+          L[1].startsWith(srcRow0.slice(0, 7).join(',') + ','), L[1].slice(0, 60) +
+          ' vs ' + srcRow0.slice(0, 7).join(',') + ',');
+      chk('行数 = 9 数据行 + 表头', L.length === 10, L.length + ' 行');
+    }
+  }
+
   chk('全流程无任何 JS 异常', errs.length === 0, errs.slice(0, 5).join(' | '));
 
   ws.close(); proc.kill();
   try { fs.rmSync(profile, { recursive: true, force: true }); } catch (e) { /* Chrome 尚未完全退出 */ }
-  console.log('\n' + (fails ? '*** ' + fails + ' 项失败 ***' : '浏览器端到端全部通过'));
+  /* 末尾把总数打出来：README 里写着「N 项断言」，那个 N 从来是手数的，
+   * 加了几条测试就会悄悄过期。自己报，README 的数字就有据可查。 */
+  console.log('\n' + (fails ? '*** ' + fails + ' 项失败 ***' : '浏览器端到端全部通过') +
+              '（共 ' + total + ' 项断言）');
   process.exit(fails ? 1 : 0);
 })().catch(e => { console.error(e); process.exit(1); });

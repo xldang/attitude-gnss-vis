@@ -47,8 +47,9 @@ Then select the two sample inputs in the page:
 | Trajectory | `samples/traces/flight_shanghai_xian_5000.csv` |
 
 Drag the elevation mask slider (0°–45°, default 15°) — both charts and both sky plots
-recompute immediately. "Export research data" downloads a CSV with three appended columns:
-`Visible_Count`, `PDOP`, `PRN_label`.
+recompute immediately. "Export research data" downloads a per-epoch CSV whose header is
+fixed at the 7 canonical names (`Time`/`Longitude`/`Latitude`/`Height`/`Yaw`/`Pitch`/`Roll`)
+plus `Visible_Count`, `PDOP` and `PRN_label` — whatever the input file looked like.
 
 ## Repository layout
 
@@ -59,16 +60,19 @@ attitude-gnss-vis/
 │  └─ ref_pdop.py           Independent Python implementation (numerical baseline for the JS)
 ├─ test/
 │  ├─ test_core.js          Node core regression: JS vs Python, epoch by epoch
-│  ├─ e2e_browser.js        Browser end-to-end: drives real Chrome over CDP, 199 assertions
+│  ├─ e2e_browser.js        Browser end-to-end: drives real Chrome over CDP (self-reports its assertion count)
 │  ├─ fixtures/
 │  │  ├─ train_set.csv      Real receiver measurements (regression fixture)
+│  │  ├─ trace_cn_shuffled.csv   Chinese headers, shuffled, extra columns (a mapping workout)
+│  │  ├─ trace_opaque.csv   Headers matching no alias: manual mapping is the only way
+│  │  ├─ trace_space.dat    Space-delimited, fixed-width aligned, Chinese headers
 │  │  └─ sky-ref/           Measured sky-plot screenshots, one per epoch of train_set.csv
 │  └─ tools/
 │     ├─ shot.js            Page screenshot + canvas diagnostics
 │     └─ shot_tip.js        Tooltip layout checker
 ├─ samples/
 │  ├─ rnx/                  Ephemeris sample (BKG public broadcast ephemeris)
-│  └─ traces/               Trajectory sample (produced by sim-trace)
+│  └─ traces/               Trajectory samples (produced by sim-trace; a csv and two .dat)
 └─ build/                   Test artifacts (gitignored)
 ```
 
@@ -80,9 +84,9 @@ Mixed-system broadcast messages are supported. Kepler-type systems (GPS / Galile
 BeiDou / QZSS / NavIC) get full harmonic corrections from BROADCAST ORBIT 1–7;
 GLONASS and SBAS get XYZ + velocity + acceleration.
 
-### Trajectory: CSV
+### Trajectory: CSV / DAT
 
-Required columns (case-sensitive):
+Required columns (**the names do not have to be these**):
 
 | Column | Unit | Meaning |
 |---|---|---|
@@ -93,6 +97,33 @@ Required columns (case-sensitive):
 | `Yaw` | deg | Heading, **north = 0, west of north positive (+), east of north negative (−)**, in (−180, +180] |
 | `Pitch` | deg | Nose-up positive |
 | `Roll` | deg | Right-wing-down positive |
+
+**On column names, order and count**: the tool detects the columns first and only asks you to
+point at them once when detection fails.
+- Names may be Chinese (`时间` / `经度` / `纬度` / `高程` / `航向角` / `俯仰角` / `横滚角`)
+  or carry a unit suffix (`Height (m)`) — units in brackets and any separators are stripped
+  before comparison.
+- **Column order is irrelevant**: internally this is a "canonical field → real column index"
+  mapping, so any ordering works.
+- **Extra columns are kept as-is**: they take no part in the computation and never reach the
+  export (whose columns are fixed — see "Export").
+- Anything it cannot identify is a hard failure naming the missing columns — it never
+  silently substitutes 0.
+
+**On file formats**: `.csv` / `.dat` / `.txt` go through the text parser, which sniffs the
+delimiter — comma, tab, semicolon, pipe, and **space as a last resort** (so fixed-width
+`.dat` works too; runs of spaces collapse into one). The decision is made by the column
+count of the header line, so a comma file whose *field names contain spaces*
+(`GPS Time, Longitude, …`) is not stolen by the space rule. The text layer also honours
+RFC-4180 quoting (sample `train_set.csv` has a `"G01,G02"`-style `PRN_label` column).
+
+**Batch import resolves the mapping once**: the first trajectory in a batch is detected
+automatically and the resulting mapping is applied to every file after it. So for a hundred
+trajectories that share one column scheme, you point at the first one and never touch the
+rest. Each file's header is compared against the first; any that differ are flagged
+separately (`N 份表头不一致`) rather than being parsed with a mapping that may not fit.
+Changing the mapping clears the parsed objects, task table and run results, because those
+results were computed from the old columns and are worse than no results at all.
 
 The same format is produced by **[sim-trace](https://github.com/your-id/sim-trace)**.
 
@@ -190,9 +221,50 @@ grid consistency separately and tells you to read the aggregate when it fails.
 | Trajectory spread | Mode ②: one point per trajectory, x = mean altitude |
 | Summary table | Per task: epochs, visible count mean/extremes, PDOP mean/peak, NaN ratio, drop rate, elapsed ms |
 
-Two CSVs are exportable — a long per-epoch table (`task,t0_utc,epoch,t_rel_s,visible_count,
-pdop,drop_rate`) and the summary table (`task,t0_utc,epochs,mean_visible,...,drop_rate,cover,ms`);
-both filenames carry the mask angle.
+### Export
+
+Every filename carries the mask angle (re-exporting at a different mask saves a separate copy
+rather than overwriting):
+
+| Button | Output |
+|---|---|
+| **Export research data CSV** (single task) | per-epoch, header fixed at 10 columns (below) |
+| **Per-task ZIP** | one zip, **one csv per task**, in exactly the same shape as the single-task export, members named `A_on_B_mask<mask>_<NN>.csv` |
+| Per-epoch CSV (combined) | one long table (`task,t0_utc,epoch,t_rel_s,visible_count,pdop,drop_rate`) with every task concatenated |
+| Summary CSV | one row per task (`task,t0_utc,epochs,mean_visible,...,drop_rate,cover,ms`) |
+
+**The per-epoch csv has a fixed set of 10 columns**, produced by one shared routine for the
+single-task export and for every member of the zip:
+
+```
+Time,Longitude,Latitude,Height,Yaw,Pitch,Roll,Visible_Count,PDOP,PRN_label
+```
+
+The first seven are the **canonical names the mapping resolved to**; the last three are the
+products. Every other column in the source file is left behind — vendor note columns, spare
+experiment columns, odd ordering, Chinese headers — all stay on the input side. Having already
+paid for column detection and mapping, the output should be normalised rather than hand the
+uncontrolled shape of the input downstream. The combined table and the summary table are a
+*different* product (task-to-task comparison), which is why they keep a `task` column on purpose.
+
+**Why a zip rather than one download per task**: a batch of a hundred tasks is a hundred
+programmatic downloads, and the browser blocks them from the second one onward ("this site
+attempted to download multiple files"), so it amounts to being unable to export at all. One zip
+triggers one download; unpacked, it is exactly the one-csv-per-task you wanted. Compression uses
+the browser's native `CompressionStream` — no dependency is added.
+
+The **naming rule** is one rule for both modes: `A_on_B_mask<mask>_<NN>.csv`, where **A is the
+fixed-side input and B is this task's input** (mode ① A=trace, B=ephemeris; mode ② the reverse).
+`NN` is the task index, zero-padded to a common width (a hundred tasks give `_001`…`_100`), so a
+file manager sorting by name sorts numerically. Chinese, parentheses and spaces in filenames are
+kept verbatim; only the characters Windows actually forbids (`\ / : * ? " < > |`) are replaced,
+and each stem is truncated to 64 characters.
+
+Task name, fixed-side name, mask and start instant take no column: the filename already carries
+A, B and the mask, and every task in a batch is anchored to one instant, so all of it is constant
+inside a single csv. The mask in the filename comes from the value actually used for that run,
+not the current slider position: the batch mask slider only changes the parameter and does not
+invalidate results, so naming from the slider would produce files labelled "23°" over 0° data.
 
 ## Verification
 
@@ -293,6 +365,10 @@ only those can catch it:
 - `samples/traces/flight_shanghai_xian_5000.csv` — Shanghai→Xi'an airliner flight profile
   (5000 samples at 1 Hz) generated by
   [sim-trace](https://github.com/your-id/sim-trace).
+- `samples/traces/trace-type1.dat` / `trace-type2.dat` — the demo pair for batch mode:
+  one flight profile written two ways (comma- vs space-delimited, canonical vs abbreviated
+  and Chinese headers), 5000 epochs each, to show that column mapping plus a common start
+  instant makes the two inputs comparable.
 - `test/fixtures/train_set.csv`, `test/fixtures/sky-ref/*.png` — field measurements collected by the
   project author.
 

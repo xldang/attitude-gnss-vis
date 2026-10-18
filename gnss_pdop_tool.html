@@ -52,6 +52,18 @@ input[type=file].finput:focus-visible + .fbtn{outline:2px solid var(--accent);ou
    截掉，而「· 5000 行」「等 3 份」「（1 份解析失败）」这些才是要看的信息。 */
 .fpick .fname{flex:1 0 100%;min-width:0;margin-top:0;text-align:left}
 .fpick .fname em{font-style:normal;color:var(--muted)}
+/* 列映射面板：七个必需列各一行，下拉里是这个文件真实的表头。
+   默认 hidden，只在认不全（或用户手动展开过）时才出现。 */
+.cm-sum{font:11px var(--mono);color:var(--muted);margin-top:4px;cursor:pointer}
+.cm-sum:hover{color:var(--accent)}
+.cm-sum.bad{color:#b91c1c;font-weight:600}
+.colmap{margin-top:7px;padding:8px 9px;border:1px solid var(--line);border-radius:6px;
+  background:var(--accent-soft)}
+.cmrow{display:flex;align-items:center;gap:8px;margin-top:4px}
+.cmrow:first-child{margin-top:0}
+.cmlab{flex:0 0 46px;font-size:11.5px;color:var(--muted)}
+.cmrow select{flex:1;min-width:0;font:11.5px var(--mono);padding:3px 5px;
+  border:1px solid var(--line);border-radius:5px;background:#fff;color:var(--ink)}
 .row{display:flex;gap:7px;margin-top:9px}
 .row > *{flex:1}
 button{font:12.5px inherit;padding:6px 10px;border:1px solid var(--line);border-radius:6px;
@@ -218,15 +230,17 @@ table.btab tr.st-base td{background:var(--accent-soft)}
       <div class="panel">
         <h2>数据输入
           <span class="q d" tabindex="0" data-t="星历取 RINEX 3.04 混合导航电文（G/E/C/J/I 走开普勒，R/S 走笛卡尔），按定宽字段逐字符扫描，不按空白切分。
-轨迹需含 Time / Longitude / Latitude / Height / Yaw / Pitch / Roll 七列（其余列原样保留）。">?</span>
+轨迹需含 Time / Longitude / Latitude / Height / Yaw / Pitch / Roll 七列。列名可以不是这七个（中文、带单位、带空格都行），列顺序任意、多余列照单全收 —— 认不出来时下方会出现列映射面板，指一次即可。">?</span>
         </h2>
         <label>星历文件（RINEX 3.04）</label>
         <input type="file" id="fRnx" accept=".rnx,.RINEX,.txt,text/plain">
         <div class="fname" id="nRnx">未选择 · 样本 <code>samples/rnx/*.rnx</code></div>
 
-        <label style="margin-top:9px">轨迹文件（CSV）</label>
-        <input type="file" id="fCsv" accept=".csv,text/csv">
+        <label style="margin-top:9px">轨迹文件（CSV / DAT）</label>
+        <input type="file" id="fCsv" accept=".csv,.dat,.txt,text/csv">
         <div class="fname" id="nCsv">未选择 · 样本 <code>samples/traces/*.csv</code></div>
+        <div class="cm-sum" id="nCsvSum"></div>
+        <div class="colmap" id="fColMap" hidden></div>
 
         <label style="margin-top:9px">起始时刻（UTC）
           <span class="q" tabindex="0" data-t="轨迹的 Time 列是相对秒偏移，没有绝对日期，所以必须由这里给出零点。
@@ -277,8 +291,10 @@ table.btab tr.st-base td{background:var(--accent-soft)}
 
       <div class="panel">
         <h2>导出
-          <span class="q" tabindex="0" data-t="导出内容 = 轨迹的原始全部列 + Visible_Count + PDOP，行数与轨迹一一对应，不加 HDOP/VDOP 等其他列。
-UTF-8 带 BOM，Excel 直接双击可读。">?</span>
+          <span class="q" tabindex="0" data-t="导出列固定为 10 列，与输入文件长什么样无关：
+Time / Longitude / Latitude / Height / Yaw / Pitch / Roll（映射后的标准名）+ Visible_Count + PDOP + PRN_label。
+源文件里的其余列一律不带走 —— 认列映射做过的功夫，不该再把不可控的输入形态传给下游。
+行数与轨迹一一对应。UTF-8 带 BOM，Excel 直接双击可读。">?</span>
         </h2>
         <button id="bExp" class="primary" style="width:100%" disabled>导出科研数据 CSV</button>
       </div>
@@ -437,6 +453,12 @@ Yaw 画的是轨迹 CSV 里的**原样罗盘方位角**。它跨 ±180° / 0° �
             <label class="fbtn" for="bMany">选择文件</label>
             <span class="fname" id="bManyName">未选择</span>
           </div>
+
+          <!-- 列映射面板放在这里而不是分别塞进上面两个 .fpick：轨迹那一侧随模式
+               翻转（模式①是固定侧，模式②是批量侧），放一处、由 syncMode 控制显隐，
+               才不会出现两块面板 id 重复 —— 那种错是静默的，见 test_core.js 的重复 id 用例。 -->
+          <div class="cm-sum" id="bColMapSum"></div>
+          <div class="colmap" id="bColMap" hidden></div>
         </div>
 
         <div class="panel">
@@ -499,7 +521,13 @@ Yaw 画的是轨迹 CSV 里的**原样罗盘方位角**。它跨 ±180° / 0° �
           <div class="blegend" id="bLegend"></div>
           <div class="bnote" id="bNote"></div>
           <div class="row" style="margin-top:10px">
-            <button id="bExpRuns" class="primary">导出逐历元 CSV</button>
+            <button id="bExpZip" class="primary">分任务导出 ZIP</button>
+            <span class="q" tabindex="0" data-t="每个任务一个 csv，打包成一个 zip 下载。
+解压后每个文件对应一个任务，命名 A_on_B_mask掩角_NN.csv：
+A 是固定侧输入，B 是这个任务的输入，NN 是序号（补零到同宽，100 项就是 _001…_100）。
+文件名带掩角，所以换个掩角重导会另存一份而不会覆盖。
+之所以打包而不是逐份下载：上百个任务就是上百次下载，浏览器会从第二次起就拦。">?</span>
+            <button id="bExpRuns">导出逐历元 CSV（合并全表）</button>
             <button id="bExpSum">导出汇总 CSV</button>
           </div>
         </div>
@@ -808,39 +836,250 @@ Yaw 画的是轨迹 CSV 里的**原样罗盘方位角**。它跨 ±180° / 0° �
              h: d.getUTCHours(), mi: d.getUTCMinutes(), s: d.getUTCSeconds() };
   }
 
-  /* ---------- 轨迹 CSV ---------- */
+  /* ---------- 轨迹文件 ----------
+   *
+   * 分三层，刻意分开，因为下游只认中间那层的产物：
+   *
+   *   读文本  splitCSVRows   引号/分隔符/换行  ->  {cells, 原始行文本}
+   *   认列名  detectColumns 表头 -> 规范字段的下标映射
+   *   取数据  parseTraceRows 映射 + 单元格 ->  data.Time / data.Latitude / …
+   *
+   * 映射里存的是**这一份文件表头里的下标**，所以列顺序任意、多余列任意都不影响
+   * 下游：解析完交给 timeGrid / buildLOSChunk 的永远是这七个规范键。
+   *
+   * head 必须逐字保留**原始列名**，导出（exportCsv）靠它回写表头。
+   * 早先把 head 规范化过一次，导出的列名就跟着变了，样本回归当场挂掉。 */
   const NEED = ['Time', 'Longitude', 'Latitude', 'Height', 'Yaw', 'Pitch', 'Roll'];
-  function parseTraceCSV(text) {
-    if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
-    const raw = text.split(/\r?\n/);
-    while (raw.length && raw[raw.length - 1].trim() === '') raw.pop();
-    if (raw.length < 2) throw new Error('轨迹 CSV 至少需要表头和一行数据');
-    const head = raw[0].split(',').map(s => s.trim().replace(/^﻿/, ''));
-    const idx = {};
-    head.forEach((h, i) => { idx[h.toLowerCase()] = i; });
-    const missing = NEED.filter(n => !(n.toLowerCase() in idx));
-    if (missing.length) throw new Error('轨迹 CSV 缺少必需列: ' + missing.join(', '));
 
-    const rows = raw.slice(1).filter(l => l.trim() !== '');
-    const n = rows.length;
-    const col = name => new Float64Array(n);
+  /* 列名归一化：只用于**匹配**，绝不用于输出。
+   * 去括号里的单位（「海拔(m)」→「海拔」）、去分隔符、转小写。
+   * String() 不能省：detectColumns 是导出函数，表头由调用方给，
+   * 不能假定每一格都是字符串 —— .toLowerCase 直接 TypeError。 */
+  const normHead = h => String(h == null ? '' : h)
+    .replace(/^[\s﻿]+|[\s﻿]+$/g, '')
+    .toLowerCase()
+    .replace(/[(（[【][^)）\]】]*[)）\]】]/g, '')
+    .replace(/[^0-9a-z一-龥]+/g, '');
+
+  /* 同义词表：规范化后对不上时才查这里，对不上就交回用户选。
+   * 刻意保持很小 —— 猜错 Height（椭球高 vs 海拔）会让整条轨迹的 PDOP 悄悄
+   * 失真，而界面上完全看不出来；这种宁可让用户指一下。
+   * 缩写（T / Longi / Hei …）也收，因为轨迹导出里太常见，每次都让人指一遍
+   * 是白添的摩擦；但这张表永远补不全，真正的兜底是下面那个映射面板。 */
+  const HEAD_ALIAS = {
+    time:      ['时间', '时刻', '时间戳', 'timestamp', 'utc', 'gpstime', 'gpstimeofweek', 'elapsedtime', 't'],
+    longitude: ['经度', 'lon', 'lng', 'long', 'longi', 'longt'],
+    latitude:  ['纬度', 'lat', 'lati', 'latd'],
+    height:    ['高程', '海拔', '高度', 'hei', 'hgt', 'alt', 'ele'],
+    yaw:       ['航向', '航向角', '偏航角', 'heading', 'hdg'],
+    pitch:     ['俯仰', '俯仰角', '俯仰度'],
+    roll:      ['横滚', '横滚角', '滚转', '滚转角', '翻滚角', 'bank']
+  };
+
+  /* 表头 -> {map, hits, missing}。三级：用户指定 > 规范化精确 > 同义词。
+   * hits 只用于界面上标「自动识别」，不参与任何判断。 */
+  function detectColumns(head, forced) {
+    const norm = head.map(normHead);
+    const map = {}, hits = {}, missing = [];
+    const used = new Set();
+    for (const k of NEED) {
+      let i = -1, how = null;
+      const f = forced && forced[k];
+      if (Number.isInteger(f) && f >= 0 && f < head.length) { i = f; how = 'manual'; }
+      if (i < 0) {
+        const j = norm.indexOf(normHead(k));
+        if (j >= 0 && !used.has(j)) { i = j; how = 'exact'; }
+      }
+      if (i < 0) {
+        for (const a of (HEAD_ALIAS[k.toLowerCase()] || [])) {
+          const j = norm.indexOf(a);
+          if (j >= 0 && !used.has(j)) { i = j; how = 'alias'; break; }
+        }
+      }
+      if (i >= 0) { map[k] = i; hits[k] = how; used.add(i); }
+      else missing.push(k);
+    }
+    return { map, hits, missing };
+  }
+
+  /* 单行切分（按调用给的分隔符），识别 RFC-4180 的引号与 "" 转义。
+   * 样本 train_set.csv 的 PRN_label 就是 "G01,G02" 这种带引号内含逗号的写法，
+   * 不处理的话会把一行拆成多列。
+   * d 传 null 表示**空白分隔**：任意空白算分隔符，且连续空白只算一个 ——
+   * 定宽对齐的轨迹导出（列之间靠若干空格补齐）必须这么切，
+   * 按单空格切会在补齐处切出一堆空单元。 */
+  function splitCSVRows(text, d) {
+    const ws = (d === null);
+    const rows = [];
+    let cells = [], buf = [], q = false, start = 0;
+    const flush = () => { cells.push(buf.join('')); buf = []; };
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i];
+      if (ch === '"') {
+        if (q && text[i + 1] === '"') { buf.push('"'); i++; }
+        else q = !q;
+        continue;
+      }
+      /* 空白分隔只认空格与制表符，**不能**用 /\s/ —— 它连换行一起匹配，
+       * 换行会被这一支先吃掉，整个文件就并成一行了。
+       * 换行留给下面那一支处理。 */
+      if (!q && (ws ? (ch === ' ' || ch === '\t') : ch === d)) {
+        /* 空白模式下只有 buf 非空才收一个单元 —— 于是行首空白和补齐用的
+         * 连续空白都被跳过。判断依据必须是 buf 而不是 cells：cells 在第一次
+         * flush 之后就一直非空了，拿它当条件会在补齐的第二个空格处
+         * 又切出一个空单元，把定宽对齐的列全打散。 */
+        if (!ws || buf.length) flush();
+        continue;
+      }
+      /* 换行只有不在引号里才算行尾 —— 否则引号内含换行的单元会把一行劈成两行。
+       * 行尾的收尾规则与分隔符保持一致：空白模式下 buf 为空就不收，
+       * 否则定宽对齐行末那截补齐空格会凭空多出一个空列。 */
+      if (!q && (ch === '\n' || ch === '\r')) {
+        if (ch === '\r' && text[i + 1] === '\n') i++;
+        if (!ws || buf.length) flush();
+        rows.push({ cells, start, end: i + 1 });
+        cells = []; start = i + 1;
+        continue;
+      }
+      buf.push(ch);
+    }
+    if (buf.length || cells.length) {
+      if (!ws || buf.length) flush();
+      rows.push({ cells, start, end: text.length });
+    }
+    return rows;
+  }
+
+  /* 分隔符嗅探：取第一行非空行，数各候选分隔符把它切出几列，取最多的那个。
+   * 样本里的 .dat 是逗号，外部导出还常见制表符与分号。
+   * 注意数的是**列数**而不是行数 —— 拿 splitCSVRows 的返回长度当列数，
+   * 恒等于 1，于是永远选中第一个候选逗号，制表符/分号文件一律被当成单列。
+   *
+   * 空白分隔排在最后、且只在前四种都只切出 1 列时才启用。这个次序是必须的：
+   * 中文表头 `GPS 时间, 经度, 纬度` 按空格切反而比按逗号切出更多格，
+   * 若让它参与竞争就会抢走本来正确的逗号；而空格分隔的文件（定宽对齐）
+   * 在其它任何分隔符下都表现为「只有一列」，正好可以据此分辨。 */
+  function sniffDelim(text) {
+    const line = text.slice(0, 8192).split(/\r?\n/).find(l => l.trim() !== '') || '';
+    let best = ',', bestN = 0;
+    for (const d of [',', '\t', ';', '|']) {
+      const r = splitCSVRows(line, d)[0];
+      const n = r ? r.cells.length : 0;
+      if (n > bestN) { bestN = n; best = d; }
+    }
+    if (bestN > 1) return best;
+    const w = splitCSVRows(line, null)[0];
+    return w && w.cells.length > 1 ? null : best;
+  }
+
+  /* 表格 -> 解析结果。cells 是切好的单元格（每格一个字符串），
+   * 解析结果只有映射后的标准列与 n；源表头只作为「哪些列没被用上」记下来，
+   * 不进数据、也不进导出 —— 导出只认标准列，见 epochCsvText。 */
+  function parseTraceRows(head, cells, mapping) {
+    const n = cells.length;
     const out = {};
-    NEED.forEach(k => { out[k] = col(k); });
-    const extra = head.filter(h => NEED.indexOf(h) < 0);
-
+    for (const k of NEED) out[k] = new Float64Array(n);
     let bad = 0;
     for (let r = 0; r < n; r++) {
-      const c = rows[r].split(',');
-      NEED.forEach(k => {
-        const v = parseFloat(c[idx[k.toLowerCase()]]);
+      const c = cells[r];
+      for (const k of NEED) {
+        const v = parseFloat(c[mapping[k]]);
         if (!isFinite(v)) bad++;
         out[k][r] = v;
-      });
+      }
     }
     let nonMono = 0;
     for (let r = 1; r < n; r++) if (!(out.Time[r] > out.Time[r - 1])) nonMono++;
-    return { head, extra, rows, n, data: out, badCells: bad, nonMono };
+    const used = new Set(NEED.map(k => mapping[k]));
+    const extra = head.filter((h, i) => !used.has(i));
+    return { head, extra, n, data: out, badCells: bad, nonMono };
   }
+
+  function throwMissing(missing) {
+    throw new Error('轨迹 CSV 缺少必需列: ' + missing.join(', '));
+  }
+
+  /* 把一个值转义成合法的 CSV 字段。要用它的地方有两条来路：空格/制表/分号
+   * 分隔的文本文件不能把原行直接写进 .csv，PRN_label 这种「一格装着用逗号
+   * 分隔的列表」的值更是天生含逗号。不转义的话，一格内的逗号会让导出的文件
+   * 整行错列 —— 而且这种错在页面上完全看不出来，只有读文件的人才知道。 */
+  const csvCell = v => {
+    const s = v === null || v === undefined ? '' : String(v);
+    return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  };
+
+  /* ---------------- 规范化的逐历元 CSV ----------------
+   *
+   * 列**只由映射决定，与输入文件长什么样无关**：先认列、再按标准名取值。
+   * 反过来做（把源文件的原始列原样带出去）看着忠实，实则把不可控的输入形态
+   * 原样传给了下游 —— 厂商备注列、多余的实验列、乱序、中文列名，全都跟着
+   * 走，而且每份输入一个样。既然已经付出认列与映射的代价，输出就该规范可控。
+   *
+   * 标准 7 列取自 Float64Array 里**已经解析好的数值**，不再回读原始文本：
+   *   - 非有限值（认列时统计的 badCells 就是它们）写成空格，与 PDOP 的写法一致；
+   *   - 其余走 String(v) 的最短往返表示，double 原样还原，不引入二次误差。
+   * 这 7 个值都是数字，不可能含逗号/引号，无需逐格转义。
+   */
+  const EXP_COLS = NEED.concat(['Visible_Count', 'PDOP', 'PRN_label']);
+  function epochCsvText(d, n, counts, pdops, prn) {
+    const out = [EXP_COLS.join(',')];
+    for (let i = 0; i < n; i++) {
+      const p = pdops[i], src = [];
+      for (let k = 0; k < NEED.length; k++) {
+        const v = d[NEED[k]][i];
+        src.push(isFinite(v) ? String(v) : '');
+      }
+      // PRN_label 内含逗号，必须加引号，否则解析器会把整行拆成多列
+      out.push(src.join(',') + ',' + counts[i] + ',' +
+               (isFinite(p) ? p.toFixed(4) : '') + ',"{' + prn[i] + '}"');
+    }
+    return out;
+  }
+
+  /* 每历元可见星的 PRN 列表（不含花括号，调用方自己加）。
+   * 判据必须与 solveAll()（及 drawSky()）**逐字相同**：
+   *   z_b > sin(掩角)  且  up > 0（地平线以上）
+   * 分组按 SYS_ORDER、组内按 PRN 字符串排序，格式 "{G05,G11,…}" 与实测基准一致。
+   * 放进 core 是因为单任务导出与批量每个任务**必须用同一份判据** ——
+   * 两处各写一遍，早晚漂移成两个口径的「可见星」。 */
+  function prnLabels(los, nSat, nEp, upRow, idx, thr, satNames) {
+    const out = new Array(nEp);
+    for (let e = 0; e < nEp; e++) {
+      const u0 = upRow[e * 3], u1 = upRow[e * 3 + 1], u2 = upRow[e * 3 + 2];
+      const base = e * nSat * 3, seen = [];
+      for (let k = 0; k < idx.length; k++) {
+        const o = base + idx[k] * 3, z = los[o + 2];
+        if (z <= thr) continue;
+        if (u0 * los[o] + u1 * los[o + 1] + u2 * z <= 0) continue;   // 地平线以下
+        seen.push(satNames[idx[k]]);
+      }
+      out[e] = SYS_ORDER.reduce((a, sys) =>
+        a.concat(seen.filter(x => x[0] === sys).sort()), []).join(',');
+    }
+    return out;
+  }
+
+  /* 表格入口：检测列名 -> 缺列则点名抛出 -> 解析。parseTraceCSV 与任何直接
+   * 递表格的调用方共用这一段，免得「缺列的报错文案」在两个地方各写一份、
+   * 日后改一处忘一处。 */
+  function parseTraceTable(head, cells, mapping) {
+    const det = mapping ? { map: mapping, missing: [] } : detectColumns(head);
+    if (det.missing.length) throwMissing(det.missing);
+    return parseTraceRows(head, cells, det.map);
+  }
+
+  /* 文本入口。签名保持 (text) -> 解析结果不变，core 回归脚本照原样调用。 */
+  function parseTraceCSV(text, mapping) {
+    if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+    const d = sniffDelim(text);
+    const rs = splitCSVRows(text, d);
+    while (rs.length && rs[rs.length - 1].cells.every(c => c.trim() === '')) rs.pop();
+    if (rs.length < 2) throw new Error('轨迹 CSV 至少需要表头和一行数据');
+    const head = rs[0].cells.map(s => s.trim());
+    const body = rs.slice(1).filter(r => r.cells.some(c => c.trim() !== ''));
+    return parseTraceTable(head, body.map(r => r.cells), mapping);
+  }
+
 
   /* ---------- LOS 缓存 ----------
    * 一次性算完所有历元 × 所有卫星的机体系 LOS 单位矢量，之后拖动掩角/切星座
@@ -1350,13 +1589,64 @@ Yaw 画的是轨迹 CSV 里的**原样罗盘方位角**。它跨 ±180° / 0° �
     return [A[0].slice(4), A[1].slice(4), A[2].slice(4), A[3].slice(4)];
   }
 
+  /* ---------- 文件名 ----------
+   * 导出的成员名直接来自用户挑的文件名，而那里面什么都有：中文、空格、
+   * 括号、Windows 禁用的 \ / : * ? " < > |，甚至从别的机器拖过来的路径。
+   * 纯字符串逻辑，不碰 DOM，所以放核心块 —— test_core.js 能直接测它。 */
+
+  /** 剥掉目录成分与扩展名。i > 0：'.gitignore' 这类前导点不算扩展名。 */
+  function fileStem(f) {
+    const s = String(f === null || f === undefined ? '' : f).replace(/^.*[\\/]/, '');
+    const i = s.lastIndexOf('.');
+    return i > 0 ? s.slice(0, i) : s;
+  }
+
+  /** 把任意字符串收拾成一个 Windows / zip 都能接受的单段文件名主干。
+   *  中文**原样保留**：转写不可逆，零依赖下也没有码表，而 ZIP 的 UTF-8
+   *  标志位（通用位 11）已经把编码问题解决了；硬洗掉只会把「副本」变成「____」。 */
+  function safeName(s, maxLen) {
+    s = String(s === null || s === undefined ? '' : s);
+    s = s.replace(/^.*[\\/]/, '');                            // 只取最后一段。成员名里
+                                                             // 绝不能有路径分隔符 —— 这是 zip-slip 防线
+    s = s.replace(/[\x00-\x1f\x7f<>:"|?*]/g, '_');          // Windows 禁字符 + 控制字符
+    s = s.replace(/^[.\s]+/, '').replace(/[.\s]+$/, '');      // 首尾的点与空格：Windows 会**静默**
+                                                             // 丢弃。必须在折叠空白**之前**做，否则
+                                                             // 尾空格先变成 _，这一半就成了死代码
+    s = s.replace(/\s+/g, '_');                              // 空白折叠（含全角空格，\s 覆盖）
+    if (!s) s = 'file';                                      // 全空 / '.' / '..' / 全禁字符的保底
+    if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(s)) s = '_' + s;   // 保留设备名
+    const n = maxLen || 64;
+    if (Array.from(s).length > n) {
+      s = Array.from(s).slice(0, n).join('');                // 按**码点**截，别把代理对劈成半个
+      s = s.replace(/[.\s]+$/, '');                          // 截断可能**新暴露**一个尾点，再修一次
+      if (!s) s = 'file';
+    }
+    return s;
+  }
+
+  /** 批量逐历元导出的成员名：A_on_B_mask<掩角>_<NN>.csv
+   *  A = 固定侧文件，B = 本任务文件。两种模式同一条规则，不必按 mode 分支 ——
+   *  B.fixed 的代理已经定义成「当前 slot 的固定侧」了。 */
+  function taskCsvName(fixedName, taskName, mask, idx, total) {
+    // NN 取 runs 的 1-based 下标，不是 tasks 的：tasks 里含解析失败、根本没跑
+    // 的任务，按它索引会留下空档，解析成败一变身份还会错位。稠密 1..n，构造上唯一，
+    // 所以**不需要**额外的去重 pass —— 同一份文件被选两次也分得开。
+    const w = String(Math.max(1, total | 0)).length;         // 100 项 → 3 位，01..100，字典序 == 数值序
+    return safeName(fileStem(fixedName), 64) + '_on_' +
+           safeName(fileStem(taskName), 64) + '_mask' +
+           Number(mask).toFixed(1) + '_' +
+           String(idx).padStart(w, '0') + '.csv';
+  }
+
   root.GNSSCore = {
     WGS84_A, WGS84_E2, MU, OMEGA_E, CLIGHT, D2R, R2D, GPS_EPOCH,
     SYS_INFO, SYS_ORDER, KEP_SYS, NLINE, EPH_MAX_AGE,
     parseRinex, parseTraceCSV, selectEph, propagate, llhToEcef, matMul3, enuFromEcef,
+    detectColumns, parseTraceRows, parseTraceTable, splitCSVRows, sniffDelim, normHead, NEED,
     dcmEnuToBody, pdopFromQ, buildLOSChunk, attUpRow, solveAll, selfTest, matInv4,
     utcToGpsSec, gpsSecToUTC,
-    rinexSpan, dayTally, anchorFor, coverState, runStats, timeGrid, gridMatch
+    rinexSpan, dayTally, anchorFor, coverState, runStats, timeGrid, gridMatch,
+    fileStem, safeName, taskCsvName, csvCell, EXP_COLS, epochCsvText, prnLabels
   };
 })(typeof globalThis !== 'undefined' ? globalThis : this);
 </script>
@@ -1377,7 +1667,10 @@ Yaw 画的是轨迹 CSV 里的**原样罗盘方位角**。它跨 ±180° / 0° �
     counts: null, pdops: null,
     t0Gps: 0, mask: 15,
     sys: new Set(C.SYS_ORDER),
-    busy: false
+    busy: false,
+    /* 单任务的列映射。colMap 为 null 表示「由 core 自动认」；
+     * 一旦用户在面板里指过列，就固定下来，重解析时不再乱猜。 */
+    colMap: null, colHead: null, traceFile: null
   };
 
   const CH = { xa: 0, xb: 1, hover: -1 };
@@ -1487,6 +1780,24 @@ Yaw 画的是轨迹 CSV 里的**原样罗盘方位角**。它跨 ±180° / 0° �
     rd.readAsText(f);
   }
 
+  /* ---------- 轨迹文件读取 ----------
+   * csv / dat / txt 全部交给 core 的 parseTraceCSV：它自己会嗅探分隔符、剥 BOM、
+   * 认引号内嵌逗号。所以这一层只负责把 File 变成文本，格式差异不进解析逻辑。 */
+
+  /* 只取表头，用来定映射 —— 在真正解析之前就得知道这一份是哪种列方案，
+   * 所以读两遍是必须的：读文本很便宜，贵的是建 Float64Array 那一步。 */
+  async function readHeadOnly(f) {
+    let text = await f.text();
+    if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+    const rs = C.splitCSVRows(text, C.sniffDelim(text));
+    return rs.length ? rs[0].cells.map(s => s.trim()) : [];
+  }
+
+  /* 轨迹文件 -> 解析结果。mapping 为 null 时由 core 自动认列名。 */
+  async function parseTraceFile(f, mapping) {
+    return C.parseTraceCSV(await f.text(), mapping);
+  }
+
   $('fRnx').addEventListener('change', ev => {
     readFile(ev.target, (txt, f) => {
       const t0 = performance.now();
@@ -1514,26 +1825,124 @@ Yaw 画的是轨迹 CSV 里的**原样罗盘方位角**。它跨 ±180° / 0° �
     });
   });
 
+  /* ---------- 列映射面板 ----------
+   * 七个必需列各一个下拉框，选项就是这份文件**真实的表头**（不规范化，
+   * 用户要能对着原始列名核对）。单任务面板和批量面板共用这一个组件。
+   *
+   * 默认收起：七列全认上了就不打扰，只在文件名旁报一句「已识别 7/7 列」；
+   * 认不全或有歧义才自动展开。这一条决定了批量导入上百份文件时是零介入
+   * 还是每份都要点一遍。 */
+  const FLD = ['Time', 'Longitude', 'Latitude', 'Height', 'Yaw', 'Pitch', 'Roll'];
+  const FLD_ZH = { Time: '时间', Longitude: '经度', Latitude: '纬度', Height: '高程',
+                   Yaw: '航向', Pitch: '俯仰', Roll: '横滚' };
+
+  function colMapRender(box, head, mapping, onChange) {
+    box.innerHTML = '';
+    const det = C.detectColumns(head, mapping);
+    for (const k of FLD) {
+      const row = document.createElement('div');
+      row.className = 'cmrow';
+      const lab = document.createElement('span');
+      lab.className = 'cmlab';
+      lab.textContent = FLD_ZH[k];
+      lab.title = k;
+      const sel = document.createElement('select');
+      sel.dataset.f = k;
+      const none = document.createElement('option');
+      none.value = '-1';
+      none.textContent = '— 未选择 —';
+      sel.appendChild(none);
+      head.forEach((h, i) => {
+        const o = document.createElement('option');
+        o.value = String(i);
+        const t = String(h == null ? '' : h).trim();
+        o.textContent = t || '(空表头 第' + (i + 1) + '列)';
+        sel.appendChild(o);
+      });
+      sel.value = String(det.map[k] === undefined ? -1 : det.map[k]);
+      sel.addEventListener('change', () => {
+        const m = {};
+        box.querySelectorAll('select').forEach(s => {
+          const v = parseInt(s.value, 10);
+          if (v >= 0) m[s.dataset.f] = v;
+        });
+        onChange(m);
+      });
+      row.appendChild(lab);
+      row.appendChild(sel);
+      box.appendChild(row);
+    }
+    return det;
+  }
+
   $('fCsv').addEventListener('change', ev => {
-    readFile(ev.target, (txt, f) => {
-      try {
-        const tr = C.parseTraceCSV(txt);
-        S.trace = tr;
-        $('nCsv').textContent = f.name + ' · ' + tr.n + ' 行 × ' + tr.head.length + ' 列';
-        log('轨迹 ' + f.name, 'g');
-        log('  ' + tr.n + ' 行，表头: ' + tr.head.join(' | '));
-        const span = tr.n > 1 ? tr.data.Time[tr.n - 1] - tr.data.Time[0] : 0;
-        log('  Time 跨度 ' + span.toFixed(1) + ' s（首值 ' + tr.data.Time[0].toFixed(1) +
-            '，无绝对日期，需用左侧起始 UTC 锚定）', 'd');
-        if (tr.badCells) log('  警告: ' + tr.badCells + ' 个单元无法解析为数值', 'w');
-        if (tr.nonMono) log('  警告: Time 有 ' + tr.nonMono + ' 处非严格递增', 'w');
-        $('bRun').disabled = !(S.rinex && S.trace);
-      } catch (e) {
-        log('轨迹解析失败: ' + e.message, 'e');
-        $('nCsv').textContent = f.name + ' · 解析失败';
-      }
+    const f = ev.target.files && ev.target.files[0];
+    if (!f) return;
+    S.traceFile = f;
+    S.colMap = null;                 // 换了文件就重新推断，别把上一份的映射带过来
+    $('nCsv').textContent = f.name + ' · 解析中…';
+    parseTraceFile(f, S.colMap).then(onTraceParsed).catch(e => {
+      log('轨迹解析失败: ' + e.message, 'e');
+      $('nCsv').textContent = f.name + ' · 解析失败';
+      /* 认不全列时最该做的是让人指一次，而不是只丢一句报错就把人堵死。
+       * 面板必须在**失败**这条路上也画出来 —— 早先只在解析成功时渲染，
+       * 于是「缺少必需列」这个最需要指路的场景，恰恰成了唯一看不见面板的场景。 */
+      showColMapOnFailure(f);
+      $('bRun').disabled = !(S.rinex && S.trace);
     });
   });
+
+  /* 读表头把面板画出来。只读表头不解析，所以哪怕这文件根本没法解析
+   * （列全缺、分隔符嗅不出来），只要能切出表头就还留着一条指路的路。 */
+  async function showColMapOnFailure(f) {
+    try {
+      singleColMap(await readHeadOnly(f));
+    } catch (_) {
+      $('fColMap').hidden = true;
+      $('nCsvSum').textContent = '';
+    }
+  }
+
+  function onTraceParsed(tr) {
+    const f = S.traceFile;
+    S.trace = tr;
+    S.colHead = tr.head;
+    $('nCsv').textContent = f.name + ' · ' + tr.n + ' 行 × ' + tr.head.length + ' 列';
+    log('轨迹 ' + f.name, 'g');
+    log('  ' + tr.n + ' 行，表头: ' + tr.head.join(' | '));
+    const span = tr.n > 1 ? tr.data.Time[tr.n - 1] - tr.data.Time[0] : 0;
+    log('  Time 跨度 ' + span.toFixed(1) + ' s（首值 ' + tr.data.Time[0].toFixed(1) +
+        '，无绝对日期，需用左侧起始 UTC 锚定）', 'd');
+    if (tr.badCells) log('  警告: ' + tr.badCells + ' 个单元无法解析为数值', 'w');
+    if (tr.nonMono) log('  警告: Time 有 ' + tr.nonMono + ' 处非严格递增', 'w');
+    singleColMap(tr.head);
+    $('bRun').disabled = !(S.rinex && S.trace);
+  }
+
+  /* 单任务侧的面板：默认收起，认不全（或解析失败）才展开。
+   * 改了下拉就按新映射重解析当前文件。 */
+  function singleColMap(head) {
+    const box = $('fColMap'), sum = $('nCsvSum');
+    const det = colMapRender(box, head, S.colMap, m => {
+      S.colMap = m;
+      parseTraceFile(S.traceFile, S.colMap).then(onTraceParsed).catch(e => {
+        log('按当前列映射仍缺列: ' + e.message, 'e');
+        $('nCsv').textContent = S.traceFile.name + ' · 解析失败';
+        singleColMap(head);          // 把面板留在展开态，让人接着指
+        $('bRun').disabled = !(S.rinex && S.trace);
+      });
+    });
+    const bad = det.missing.length;
+    sum.textContent = bad
+      ? '缺 ' + bad + ' 列：' + det.missing.join('、') + '　▸ 点这里展开指认'
+      : '已识别 7/7 列　▸ 点这里核对映射';
+    sum.className = 'cm-sum' + (bad ? ' bad' : '');
+    sum.onclick = () => { box.hidden = !box.hidden; };
+    /* 认不全就展开，认全了自动收起 —— 收起本身就是「搞定了」的反馈。
+     * 别拿「之前展开过」当理由留着：那次的展开正是缺列导致的，
+     * 问题解决了还占着位置只会让人以为还没搞定。想核对就点摘要那行。 */
+    box.hidden = !bad;
+  }
 
   function pad(v) { return v < 10 ? '0' + v : '' + v; }
 
@@ -2524,40 +2933,17 @@ Yaw 画的是轨迹 CSV 里的**原样罗盘方位角**。它跨 ±180° / 0° �
   $('bExp').addEventListener('click', () => {
     if (!S.trace || !S.counts) return;
     const t = S.trace;
-    const thr = Math.sin(S.mask * C.D2R);
-    // PRN 列表。判据必须与 solveAll()（及 drawSky()）**逐字相同**：
-    //   z_b > sin(掩角)  且  up > 0（地平线以上）
-    // 分组按 SYS_ORDER、组内按 PRN 字符串排序，格式 "{G05,G11,...}" 与实测基准一致。
     const idx = [];
     for (let s = 0; s < S.nSat; s++) if (S.sys.has(S.satSys[s])) idx.push(s);
-    const names = S.rinex.sats.map(s => s.sys + s.prn);
-    function prnSet(e) {
-      const u0 = S.upRow[e * 3], u1 = S.upRow[e * 3 + 1], u2 = S.upRow[e * 3 + 2];
-      const base = e * S.nSat * 3, seen = [];
-      for (let k = 0; k < idx.length; k++) {
-        const o = base + idx[k] * 3, z = S.los[o + 2];
-        if (z <= thr) continue;
-        if (u0 * S.los[o] + u1 * S.los[o + 1] + u2 * z <= 0) continue;   // 地平线以下
-        seen.push(names[idx[k]]);
-      }
-      return C.SYS_ORDER.reduce((a, sys) =>
-        a.concat(seen.filter(x => x[0] === sys).sort()), []).join(',');
-    }
-    const out = [t.head.concat(['Visible_Count', 'PDOP', 'PRN_label']).join(',')];
-    for (let i = 0; i < t.n; i++) {
-      const p = S.pdops[i];
-      // PRN 字段内含逗号，必须加引号，否则 CSV 解析器会把一行拆成多列
-      out.push(t.rows[i] + ',' + S.counts[i] + ',' + (isFinite(p) ? p.toFixed(4) : '') +
-               ',"{' + prnSet(i) + '}"');
-    }
+    const prn = C.prnLabels(S.los, S.nSat, t.n, S.upRow, idx,
+                            Math.sin(S.mask * C.D2R), S.rinex.sats.map(s => s.sys + s.prn));
+    // 列由映射后的标准名决定，源文件里的其余列（厂商备注、多余实验列…）一律不带
+    const out = C.epochCsvText(t.data, t.n, S.counts, S.pdops, prn);
     const blob = new Blob(['﻿' + out.join('\r\n') + '\r\n'], { type: 'text/csv;charset=utf-8' });
-    const a = document.createElement('a');
     const sysTag = Array.from(S.sys).sort().join('');
-    a.href = URL.createObjectURL(blob);
-    a.download = 'gnss_pdop_mask' + S.mask.toFixed(1) + '_' + (sysTag || 'none') + '.csv';
-    document.body.appendChild(a); a.click(); document.body.removeChild(a);
-    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
-    log('已导出 ' + t.n + ' 行（含原始 ' + t.head.length + ' 列 + Visible_Count + PDOP + PRN_label）', 'g');
+    downloadBlob('gnss_pdop_mask' + S.mask.toFixed(1) + '_' + (sysTag || 'none') + '.csv', blob);
+    log('已导出 ' + t.n + ' 行（标准 ' + C.NEED.length + ' 列 + Visible_Count + PDOP + PRN_label；' +
+        '源文件其余 ' + t.extra.length + ' 列未导出）', 'g');
   });
 
   /* ============================================================================
@@ -2584,7 +2970,13 @@ Yaw 画的是轨迹 CSV 里的**原样罗盘方位角**。它跨 ±180° / 0° �
       many: [],                          // [{ name, kind, obj, err }]
       tasks: [],
       runs: [],
-      baseline: 0
+      baseline: 0,
+      /* 批次的列映射 { mapping, sig }。
+       * 批量模式下固定侧与批量侧**互斥**（模式①固定=轨迹/批量=星历，模式②反过来），
+       * 所以一份 slot 里最多只有一侧是轨迹，一个映射不会有歧义。
+       * mapping 为 null = 还没定；sig 是首个轨迹文件的归一化表头，
+       * 后面每一份都比对它，认不出来的单独标记，不拖垮整批。 */
+      map: { mapping: null, sig: null, head: null, mismatch: 0 }
     };
   }
 
@@ -2640,7 +3032,8 @@ Yaw 画的是轨迹 CSV 里的**原样罗盘方位角**。它跨 ±180° / 0° �
     $('bLblMany').textContent = fixedIsRinex()
       ? '批量文件（多条轨迹）' : '批量文件（多份星历）';
     // 固定与批量的文件类型在每个模式下是**相反**的，不能共用一个 accept
-    const accR = '.rnx,.RINEX,.txt,text/plain', accC = '.csv,text/csv';
+    const accR = '.rnx,.RINEX,.txt,text/plain',
+          accC = '.csv,.dat,.txt,text/csv';
     $('bFixed').accept = fixedKind() === 'rinex' ? accR : accC;
     $('bMany').accept = manyKind() === 'rinex' ? accR : accC;
     syncHmsHint();
@@ -2650,6 +3043,7 @@ Yaw 画的是轨迹 CSV 里的**原样罗盘方位角**。它跨 ±180° / 0° �
   /* 把当前 slot 的现场回填到界面上。纯计算 + 已解析对象，不触发重新读盘。 */
   function restoreSlot() {
     renderFileNames();
+    renderBatchColMap(slot().map.head);
     // 任务表按已解析对象重算一遍：纯函数，微秒级，但能保证起始时刻改动后两边都跟上
     rebuildTasks();
     // 结果面板：该模式跑过就恢复，没跑过就收起来
@@ -2660,6 +3054,86 @@ Yaw 画的是轨迹 CSV 里的**原样罗盘方位角**。它跨 ±180° / 0° �
 
   const sizeLabel = (kind, obj) =>
     kind === 'rinex' ? obj.sats.length + ' 颗星' : obj.n + ' 行';
+
+  /* ---------- 批量侧的列映射面板 ----------
+   * 七个下拉改一次，作用于**整批**。这是「批量导入上百份文件」这件事能落地的
+   * 关键：用户只需要对第一份指一次，后面每一份都直接套用同一套映射。
+   * 默认收起 —— 七列全认上就不打扰；认不全或有文件表头对不上才展开。 */
+  function renderBatchColMap(head) {
+    const box = $('bColMap'), sum = $('bColMapSum');
+    const s = slot();
+    if (!head || !head.length) { box.hidden = true; sum.textContent = ''; return; }
+    const det = colMapRender(box, head, s.map.mapping, m => applyBatchMap(m));
+    const bad = det.missing.length;
+    const mm = s.map.mismatch;
+    let txt = bad ? '缺 ' + bad + ' 列：' + det.missing.join('、') + '　▸ 点这里展开指认'
+                  : '已识别 7/7 列，应用于整批　▸ 点这里核对映射';
+    if (mm) txt += '（' + mm + ' 份表头不一致）';
+    sum.textContent = txt;
+    sum.className = 'cm-sum' + (bad || mm ? ' bad' : '');
+    sum.onclick = () => { box.hidden = !box.hidden; };
+    box.hidden = !(bad || mm);
+  }
+
+  /* 改了映射 = 之前所有解析结果作废。这里必须连带清 **baseline**：
+   * B.baseline 是个指向 s.runs 下标的持久代理，runs 清空后它还指着旧下标，
+   * renderResults 里 `B.runs[B.baseline]` 会取到 undefined 再取 .trace 直接抛。
+   * 少这一步就是一个必崩的空结果面板。 */
+  function invalidateSlot() {
+    const s = slot();
+    s.loadGen++;                 // 作废在途解析
+    B.fixed = null;
+    B.many = [];
+    B.tasks = [];
+    B.runs = [];
+    B.baseline = 0;
+    $('bResPanel').style.display = 'none';
+    renderResults();
+  }
+
+  /* 用 slot.files 里**记着的** File 重解析，而不是重跑 loadFixed/loadMany ——
+   * 那两个是从隐藏的原生 input 里取文件的，切过模式之后 input 里的东西
+   * 和当前 slot 未必是同一批（见 renderFileNames 上方的注释）。 */
+  async function applyBatchMap(m) {
+    const s = slot();
+    if (JSON.stringify(m) === JSON.stringify(s.map.mapping)) return;
+    s.map.mapping = m;
+    s.map.sig = s.map.head ? headSig(s.map.head) : null;
+    s.map.mismatch = 0;
+    invalidateSlot();
+    renderBatchColMap(s.map.head);
+    const gen = s.loadGen;
+    const fk = fixedKind(), mk = manyKind();
+    if (s.files.fixed) {
+      try {
+        const obj = await parseFile(s.files.fixed, fk, s.map.mapping);
+        if (gen !== s.loadGen) return;
+        B.fixed = { name: s.files.fixed.name, kind: fk, obj };
+        s.files.fixedErr = '';
+      } catch (e) {
+        if (gen !== s.loadGen) return;
+        s.files.fixedErr = e.message;
+      }
+    }
+    for (const f of s.files.many) {
+      if (gen !== s.loadGen) return;
+      try {
+        const obj = await parseFile(f, mk, s.map.mapping);
+        let mismatch = false;
+        if (mk === 'trace' && s.map.sig && headSig(obj.head) !== s.map.sig) {
+          mismatch = true; s.map.mismatch++;
+        }
+        B.many.push({ name: f.name, kind: mk, obj, mismatch });
+      } catch (e) {
+        if (gen !== s.loadGen) return;
+        B.many.push({ name: f.name, kind: mk, obj: null, err: e.message });
+      }
+    }
+    if (gen !== s.loadGen) return;
+    renderBatchColMap(s.map.head);
+    renderFileNames();
+    rebuildTasks();
+  }
 
   /* 文件名的**唯一**来源是 slot.files —— 原生 file input 那一行已被隐藏。
    * 固定文件与批量文件走同一条渲染路径，多选时按份数缩写，完整名单挂在 title 上。
@@ -2685,14 +3159,17 @@ Yaw 画的是轨迹 CSV 里的**原样罗盘方位角**。它跨 ±180° / 0° �
       return;
     }
     const nOk = s.many.filter(m => m.obj).length;
+    const nMm = s.many.filter(m => m.mismatch).length;
     /* 一份写全名，两份并排，超过两份就只留第一个加「等 N 份」：星历文件名本来就长，
      * 两份并排必然被省略号截在「等 N 份」之前，而份数才是这里要看的东西。 */
     many.textContent = (names.length === 1 ? names[0]
       : names.length === 2 ? names.join('、')
       : names[0] + ' 等 ' + names.length + ' 份') +
-      (nOk < names.length ? '（' + (names.length - nOk) + ' 份解析失败）' : '');
+      (nOk < names.length ? '（' + (names.length - nOk) + ' 份解析失败）' : '') +
+      (nMm ? '（' + nMm + ' 份表头不一致）' : '');
     many.title = names.join('\n') + '\n共 ' + names.length +
-      ' 份，其中 ' + nOk + ' 份解析成功';
+      ' 份，其中 ' + nOk + ' 份解析成功' +
+      (nMm ? '，' + nMm + ' 份表头与首个不一致（已套用同一映射）' : '');
   }
 
   Array.from(document.getElementsByName('bmode')).forEach(r =>
@@ -2726,32 +3203,70 @@ Yaw 画的是轨迹 CSV 里的**原样罗盘方位角**。它跨 ±180° / 0° �
   });
 
   /* ---------- 文件载入 ---------- */
-  function parseAs(kind, txt, name) {
-    return kind === 'rinex' ? C.parseRinex(txt) : C.parseTraceCSV(txt);
-  }
+
+  /* 归一化表头签名：判断「这份文件的列方案跟首个是不是同一套」。
+   * 只比列名 —— 多一列无关列并不影响映射，映射存的是下标，
+   * 多余列照样被 extra 收走，所以不必进签名。 */
+  const headSig = head => head.map(C.normHead).join('|');
 
   /* 解析缓存：同一份文件在两个模式里都可能被选中（例如既作为模式①批量里的星历，
-   * 又作为模式②的固定星历），按 (类型, 文件身份) 缓存可以只解析一次。
-   * 只缓存成功结果 —— 失败的文件应当允许重新挑选后再试。 */
+   * 又作为模式②的固定星历），按 (类型, 文件身份, 列映射) 缓存可以只解析一次。
+   * 只缓存成功结果 —— 失败的文件应当允许重新挑选后再试。
+   *
+   * 映射**必须**进 key。少了这一段，用户在面板上改一次列映射，这里照样命中
+   * 用旧映射解析出来的对象：任务表和曲线看着一切正常，实际用的是错的列，
+   * 而且全程没有任何报错。 */
   const PARSE_CACHE = new Map();
-  const fileKey = (f, kind) => kind + '|' + f.name + '|' + f.size + '|' + f.lastModified;
+  const fileKey = (f, kind, mapping) =>
+    kind + '|' + f.name + '|' + f.size + '|' + f.lastModified + '|' +
+    (mapping ? FLD.map(k => k + ':' + mapping[k]).join(',') : '-');
 
-  function parseFile(f, kind) {
-    const k = fileKey(f, kind);
-    if (PARSE_CACHE.has(k)) return Promise.resolve(PARSE_CACHE.get(k));
-    return new Promise((res, rej) => {
-      const rd = new FileReader();
-      rd.onload = () => {
-        try {
-          const obj = parseAs(kind, rd.result, f.name);
-          if (kind === 'rinex' && !obj.sats.length) throw new Error('未解析到任何导航电文');
-          PARSE_CACHE.set(k, obj);
-          res(obj);
-        } catch (e) { rej(e); }
-      };
-      rd.onerror = () => rej(new Error('读取失败'));
-      rd.readAsText(f);
-    });
+  async function parseFile(f, kind, mapping) {
+    const k = fileKey(f, kind, mapping);
+    if (PARSE_CACHE.has(k)) return PARSE_CACHE.get(k);
+    let obj;
+    if (kind === 'rinex') {
+      obj = C.parseRinex(await f.text());
+      if (!obj.sats.length) throw new Error('未解析到任何导航电文');
+    } else {
+      obj = await parseTraceFile(f, mapping);
+    }
+    PARSE_CACHE.set(k, obj);
+    return obj;
+  }
+
+  /* 换一批文件就丢掉上一批的映射，重新推断。
+   * 复用只该发生在**同一批之内**（第 2..N 份直接套用第 1 份的映射）。
+   * 把旧映射带进新一轮推断是危险的：detectColumns 会把它当成用户指定的
+   * forced，于是缺了 Time 的文件也会被判「Time 已映射」，缺列校验整个被绕过，
+   * 解析出来是一片 NaN 而界面上看不出任何异常。 */
+  function resetMap(s) {
+    s.map = { mapping: null, sig: null, head: null, mismatch: 0 };
+  }
+
+  /* 一批里第一份**轨迹**文件定下映射：只认一次列名，后面每一份直接套用。
+   * 返回实际用的映射；抛错时把 head 挂到 err 上，好让面板能画出来让人指。 */
+  async function inferMapping(f, s) {
+    let head = null;
+    try {
+      head = await readHeadOnly(f);
+      /* 表头先记下来再判缺列：认不全是要走「让人指一次」这条路的，
+       * 面板得靠这份表头才画得出来。记在判定的后面的话，
+       * 恰恰在最需要面板的那次它拿不到表头。 */
+      s.map.head = head;
+      const det = C.detectColumns(head, s.map.mapping);
+      if (det.missing.length) {
+        const e = new Error('轨迹 CSV 缺少必需列: ' + det.missing.join(', '));
+        e.head = head;
+        throw e;
+      }
+      s.map.mapping = det.map;
+      s.map.sig = headSig(head);
+      return det.map;
+    } catch (e) {
+      if (!e.head && head) e.head = head;
+      throw e;
+    }
   }
 
   async function loadFixed() {
@@ -2762,10 +3277,14 @@ Yaw 画的是轨迹 CSV 里的**原样罗盘方位角**。它跨 ±180° / 0° �
     const gen = ++s.loadGen;          // 后一次选择作废前一次，见 newSlot().loadGen
     s.files.fixed = f;                // 先记下 File，解析失败也不至于把文件名丢了
     s.files.fixedErr = '';
+    resetMap(s);                      // 新的一份文件，重新推断列映射
     B.fixed = null;
     renderFileNames();               // 立刻显示文件名，别让用户对着空框等解析
     try {
-      const obj = await parseFile(f, kind);
+      let mapping = null;
+      if (kind === 'trace') mapping = await inferMapping(f, s);
+      if (gen !== s.loadGen) return;
+      const obj = await parseFile(f, kind, mapping);
       if (gen !== s.loadGen) return;
       B.fixed = { name: f.name, kind, obj };
       s.files.fixedErr = '';
@@ -2773,9 +3292,11 @@ Yaw 画的是轨迹 CSV 里的**原样罗盘方位角**。它跨 ±180° / 0° �
       if (gen !== s.loadGen) return;
       B.fixed = null;
       s.files.fixedErr = e.message;
+      if (e.head) renderBatchColMap(e.head);
     }
     /* 解析落定后再渲染一次：上面的那次只会画出「未解析」，不补这一下，
      * 文件名会一直停在「未解析」直到下一次切模式或改起始时刻。 */
+    renderBatchColMap(s.map.head);
     renderFileNames();
     rebuildTasks();
   }
@@ -2795,6 +3316,7 @@ Yaw 画的是轨迹 CSV 里的**原样罗盘方位角**。它跨 ±180° / 0° �
     const gen = ++s.loadGen;
     s.files.many = files;
     B.many = [];
+    resetMap(s);                      // 新的一批，重新推断（见 resetMap 的注释）
     $('bManyName').textContent = '解析中 0/' + files.length + ' 份…';
     for (let i = 0; i < files.length; i++) {
       const f = files[i];
@@ -2802,14 +3324,25 @@ Yaw 画的是轨迹 CSV 里的**原样罗盘方位角**。它跨 ±180° / 0° �
       await yieldUI();
       if (gen !== s.loadGen) return;
       try {
-        const obj = await parseFile(f, kind);
+        /* 映射只定一次：第一份轨迹文件定下之后，后面全部直接套用。
+         * 顺带比一下表头签名 —— 签名不同的那份单独算失败，
+         * 而不是拿一套可能对不上的列去解它。 */
+        if (kind === 'trace' && !s.map.mapping) await inferMapping(f, s);
         if (gen !== s.loadGen) return;
-        B.many.push({ name: f.name, kind, obj });
+        const obj = await parseFile(f, kind, s.map.mapping);
+        if (gen !== s.loadGen) return;
+        let mismatch = false;
+        if (kind === 'trace' && s.map.sig && headSig(obj.head) !== s.map.sig) {
+          mismatch = true;
+          s.map.mismatch++;
+        }
+        B.many.push({ name: f.name, kind, obj, mismatch });
       } catch (e) {
         if (gen !== s.loadGen) return;
         B.many.push({ name: f.name, kind, obj: null, err: e.message });
       }
     }
+    renderBatchColMap(s.map.head);
     renderFileNames();               // 解析完成，换回正式文件名（列表 + 失败计数）
     rebuildTasks();
   }
@@ -3018,13 +3551,17 @@ Yaw 画的是轨迹 CSV 里的**原样罗盘方位角**。它跨 ±180° / 0° �
       let vs = 0;
       for (let e = 0; e < nEp; e++) vs += valid[e];
       const drop = 1 - vs / (nEp * nSat);
+      /* PRN 列表必须**在这里**算：下一行就放 LOS 了，导出时再算已经没数据了。
+       * 代价是一串字符串（5000 历元约 150 KB），比留着 LOS（8.9 MB）便宜两个数量级。 */
+      const prn = C.prnLabels(los, nSat, nEp, upRow, idx, Math.sin(B.mask * C.D2R),
+                              t.rinex.sats.map(s => s.sys + s.prn));
 
       B.runs.push({
         name: t.name, kind: t.kind, rinex: t.rinex, trace: t.trace,
         t0Gps: t.t0Gps, t0Utc: C.gpsSecToUTC(t.t0Gps, t.rinex.header.leap),
         grid: t.grid, nEp, nSat, nSel: idx.length,
         mask: B.mask,               // 记下算这批时的掩角，供结果标题标注
-        counts, pdops, upRow,
+        counts, pdops, upRow, prn,
         stats: C.runStats(counts, pdops, nEp, drop),
         cover: t.cover, ms: performance.now() - tms
       });
@@ -3302,28 +3839,220 @@ Yaw 画的是轨迹 CSV 里的**原样罗盘方位角**。它跨 ±180° / 0° �
   }
 
   /* ---------- 导出 ---------- */
-  function saveCsv(name, text) {
-    const blob = new Blob(['﻿' + text.join('\r\n') + '\r\n'], { type: 'text/csv;charset=utf-8' });
+
+  /** 触发一次下载。仓库里这段 create-and-click 样板原本有两份（单任务一份、
+   *  saveCsv 一份），加 zip 导出前先抽出来，别添第三份。
+   *  revoke 定时器给到 10 s：几十 MB 的 zip 与几 MB 的 CSV 不是同一个延迟
+   *  量级，中途把 blob URL 撤掉会让下载静默失败。 */
+  function downloadBlob(name, blob) {
     const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
+    const url = URL.createObjectURL(blob);
+    a.href = url;
     a.download = name;
     document.body.appendChild(a); a.click(); document.body.removeChild(a);
-    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
   }
+
+  function saveCsv(name, text) {
+    downloadBlob(name, new Blob(['﻿' + text.join('\r\n') + '\r\n'],
+                                { type: 'text/csv;charset=utf-8' }));
+  }
+
+  /* ---------- ZIP（零依赖：只用浏览器原生 CompressionStream）----------
+   * 为什么打包而不是逐份下载：一批上百个任务就是上百次程序化下载，Chrome 在
+   * file:// 下从第 2 次起就弹「是否允许下载多个文件」，实际等于导不出来。
+   *
+   * 为什么不用数据描述符：每份 CSV 都先拼成完整字符串再进压缩流，长度和 CRC
+   * 在写本地头之前就全都知道（bit 3 留 0），没必要多写一份头，也省掉了老版
+   * Windows Explorer / Java ZipInputStream 那几个边角兼容问题。
+   *
+   * 为什么总置 UTF-8 标志位：文件名里出现中文是常态，不是特例。 */
+  const CRC_T = (() => {
+    const t = new Uint32Array(256);
+    for (let n = 0; n < 256; n++) {
+      let c = n;
+      for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+      t[n] = c >>> 0;
+    }
+    return t;
+  })();
+  function crc32(u8) {                    // IEEE 802.3，反射多项式 0xEDB88320
+    let c = 0xFFFFFFFF;
+    for (let i = 0; i < u8.length; i++) c = CRC_T[(c ^ u8[i]) & 0xFF] ^ (c >>> 8);
+    return (c ^ 0xFFFFFFFF) >>> 0;
+  }
+  function dosStamp(d) {                  // 本地时区（用 UTC 会让每个解压出来的时间戳都偏）；
+    d = d || new Date();                  // DOS 只有 2 s 分辨率，所以秒要 >>1，否则溢出 5 位还会
+    const y = d.getFullYear();            // 连带把日期位写坏
+    return { time: ((d.getHours() & 31) << 11) | ((d.getMinutes() & 63) << 5) | ((d.getSeconds() >> 1) & 31),
+             date: (y < 1980 ? 0x21 : ((y - 1980) & 127) << 9) | ((d.getMonth() + 1) << 5) | d.getDate() };
+  }
+  async function collectStream(stream) {   // ReadableStream -> Uint8Array
+    const rd = stream.getReader(), cs = [];
+    let n = 0;
+    for (;;) { const { value, done } = await rd.read(); if (done) break; cs.push(value); n += value.length; }
+    const out = new Uint8Array(n);
+    let o = 0;
+    for (const c of cs) { out.set(c, o); o += c.length; }
+    return out;
+  }
+  async function deflateRaw(u8) {
+    // 必须 'deflate-raw'：'deflate' 会带上 zlib 的 2 字节头与 Adler-32 尾巴，
+    // 配上 method 8 看着还挺像，但解压端会拿它当裸 deflate 流而读出垃圾。
+    const cs = new CompressionStream('deflate-raw');
+    /* 读取必须**先挂上**再去写。反过来（先 await write() 再开始读）在 Chrome 里
+     * write() 的 promise 永远不会落地：没人读时压缩流的输出队列把写侧卡住，数据
+     * 其实照样过去了，但 await 就悬在那儿 —— 空输入都悬。大输入下这还是一个
+     * 货真价实的背压死锁，而它**不抛异常**，只是永远等不到，属于最难查的一类。 */
+    const read = collectStream(cs.readable);
+    const w = cs.writable.getWriter();
+    await w.write(u8);
+    await w.close();
+    return read;
+  }
+  /** entries: [{ name, text }] -> Promise<Blob>。text 里要自带 BOM（内容是中文，
+   *  Excel 少了 EF BB BF 会按 GBK 打开，而 Node 测试读 UTF-8 完全看不出问题）。 */
+  async function makeZip(entries) {
+    if (entries.length > 65535) throw new Error('成员数超过 65535，请分批导出');
+    const enc = new TextEncoder();
+    // CompressionStream 在 Chrome 80+ / FF 113+ / Safari 16.4+，且**不要求**
+    // 安全上下文，所以 file:// 下可用；万一没有就整批退化成 STORE，导出永不硬失败。
+    const canDeflate = typeof CompressionStream === 'function';
+    const st = dosStamp();
+    const parts = [], cd = [];
+    let off = 0;
+    for (const e of entries) {
+      const nameU8 = enc.encode(e.name);   // 长度字段必须用**字节数**：'副本' 两个字
+                                         // 是 2 个字符 6 个字节，写字符数会让中文名整个损坏
+      const raw = enc.encode(e.text);      // BOM 也在这份 raw 里，crc/尺寸都得算上它
+      const crc = crc32(raw);               // CRC 算的是**未压缩**数据
+      let method = 0, comp = raw;
+      if (canDeflate && raw.length > 64) {  // 64 字节以下 deflate 只会更大，比一下再说
+        const d = await deflateRaw(raw);
+        if (d.length < raw.length) { comp = d; method = 8; }
+      }
+      const lh = new Uint8Array(30 + nameU8.length), v = new DataView(lh.buffer);
+      v.setUint32(0, 0x04034b50, true);                    // 本地文件头
+      v.setUint16(4, 20, true);                             // 解压所需版本 2.0
+      v.setUint16(6, 0x0800, true);                         // 通用位 11 = 文件名 UTF-8；bit 3 留 0
+      v.setUint16(8, method, true);
+      v.setUint16(10, st.time, true);
+      v.setUint16(12, st.date, true);
+      v.setUint32(14, crc, true);
+      v.setUint32(18, comp.length, true);
+      v.setUint32(22, raw.length, true);
+      v.setUint16(26, nameU8.length, true);
+      v.setUint16(28, 0, true);                             // 无 extra 字段
+      lh.set(nameU8, 30);
+      parts.push(lh, comp);
+      cd.push({ nameU8, method, crc, csize: comp.length, usize: raw.length, off });
+      off += lh.length + comp.length;                       // 本地头长度**含文件名**
+    }
+    const cdSize = cd.reduce((a, c) => a + 46 + c.nameU8.length, 0);
+    if (off + cdSize > 0xFFFFFFFF) throw new Error('导出体积超过 4 GB，请分批导出');
+    const cdBuf = new Uint8Array(cdSize);
+    let o = 0;
+    for (const c of cd) {
+      const w2 = new DataView(cdBuf.buffer, o, 46);
+      w2.setUint32(0, 0x02014b50, true);                    // 中央目录头
+      w2.setUint16(4, 20, true);                            // version made by = 2.0，**主机字节 0**
+                                                         // （MS-DOS/FAT）。写成 UNIX 主机却把外部
+                                                         // 属性留 0，Info-ZIP 会解出权限 000 的文件。
+      w2.setUint16(6, 20, true);
+      w2.setUint16(8, 0x0800, true);
+      w2.setUint16(10, c.method, true);
+      w2.setUint16(12, st.time, true);
+      w2.setUint16(14, st.date, true);
+      w2.setUint32(16, c.crc, true);
+      w2.setUint32(20, c.csize, true);
+      w2.setUint32(24, c.usize, true);
+      w2.setUint16(28, c.nameU8.length, true);
+      w2.setUint16(30, 0, true);                            // extra
+      w2.setUint16(32, 0, true);                            // comment
+      w2.setUint16(34, 0, true);                            // 起始盘号
+      w2.setUint16(36, 0, true);                            // 内部属性
+      w2.setUint32(38, 0, true);                            // 外部属性（主机 = MS-DOS 时必须 0）
+      w2.setUint32(42, c.off, true);                        // 本地头偏移
+      cdBuf.set(c.nameU8, o + 46);
+      o += 46 + c.nameU8.length;
+    }
+    const eo = new Uint8Array(22), ev = new DataView(eo.buffer);
+    ev.setUint32(0, 0x06054b50, true);                      // EOCD
+    ev.setUint16(4, 0, true); ev.setUint16(6, 0, true);
+    ev.setUint16(8, cd.length, true); ev.setUint16(10, cd.length, true);
+    ev.setUint32(12, cdSize, true);
+    ev.setUint32(16, off, true);
+    ev.setUint16(20, 0, true);                              // 无注释
+    return new Blob(parts.concat([cdBuf, eo]), { type: 'application/zip' });
+  }
+
+  /* 单个任务的逐历元 CSV。列与单任务导出**逐字相同**（走同一个 epochCsvText）——
+   * 两份产物形状一致，下游一套脚本通吃，不必按来源分支。
+   * 任务名、文件名、掩角、起始时刻都不再占列：文件名已经带着 A_on_B_mask<掩角>，
+   * 同一批任务又锚定在同一时刻，这些列在一份文件内全是常量。 */
+  function runsCsvText(r) {
+    return C.epochCsvText(r.trace.data, r.nEp, r.counts, r.pdops, r.prn);
+  }
+
+  /* ---------- 分任务 ZIP ---------- */
+  let packing = false;
+  $('bExpZip').addEventListener('click', async () => {
+    if (packing) return;
+    /* B.runs / B.fixed 是代理到当前 slot 的（见上方 defineProperty），而模式
+     * 单选只在 B.busy 期间被锁住。打包上百份要花一会儿，中途切模式会把数据
+     * 写到另一个 slot 的固定侧名下，且全程不报错。所以先把两样都取成快照。 */
+    const runs = B.runs.slice(), n = runs.length;
+    const fixedName = B.fixed ? B.fixed.name : '';
+    const mode = B.mode;                                   // 同样要取快照：它只在下载那一刻被读，
+    if (!n || !fixedName) return;                          // 但循环期间模式可能已经被切走了
+    const btn = $('bExpZip');
+    packing = true; btn.disabled = true;
+    try {
+      const mask = runs[0].mask;
+      const entries = [];
+      for (let i = 0; i < n; i++) {
+        const r = runs[i];
+        entries.push({
+          name: C.taskCsvName(fixedName, r.name, mask, i + 1, n),
+          text: '﻿' + runsCsvText(r).join('\r\n') + '\r\n'
+        });
+        $('bProgText').textContent = '正在打包 ' + (i + 1) + '/' + n + '：' + entries[i].name;
+        await new Promise(rq => setTimeout(rq, 0));         // 让出主线程，进度条才动得起来
+      }
+      const blob = await makeZip(entries);
+      // 故意不叫 batch_runs*：e2e 按 startsWith('batch_runs') 轮询合并表，
+      // 同前缀会让那条断言把 zip 也捞进去。
+      const zipName = 'batch_zip_mode' + mode + '_mask' + mask.toFixed(1) + '.zip';
+      downloadBlob(zipName, blob);
+      $('bProgText').textContent = '已导出 ' + n + ' 份 CSV（每任务一份，掩角 ' +
+        mask.toFixed(1) + '°）→ ' + zipName + '（' +
+        (blob.size < 1048576 ? Math.round(blob.size / 1024) + ' KB'
+                             : (blob.size / 1048576).toFixed(1) + ' MB') + '）';
+      log('已打包 ' + n + ' 份逐历元 CSV → ' + zipName, 'g');
+    } catch (e) {
+      $('bProgText').textContent = '打包失败：' + e.message;
+      log('分任务导出失败：' + e.message, 'e');
+    } finally {
+      packing = false; btn.disabled = false;
+    }
+  });
 
   $('bExpRuns').addEventListener('click', () => {
     if (!B.runs.length) return;
     const out = ['task,t0_utc,epoch,t_rel_s,visible_count,pdop,drop_rate'];
     B.runs.forEach(r => {
       const T = r.trace.data.Time, d = fmtDay(r.t0Utc).replace(' ', 'T');
+      // r.name 走 csvCell：文件名里带逗号时，不加引号会让整行错开一列
+      const pre = C.csvCell(r.name) + ',' + d + ',';
       for (let e = 0; e < r.nEp; e++) {
         const p = r.pdops[e];
-        out.push([r.name, d, e, T[e], r.counts[e],
-                  isFinite(p) ? p.toFixed(4) : '', r.stats.drop.toFixed(6)].join(','));
+        out.push(pre + e + ',' + T[e] + ',' + r.counts[e] + ',' +
+                 (isFinite(p) ? p.toFixed(4) : '') + ',' + r.stats.drop.toFixed(6));
       }
     });
-    saveCsv('batch_runs_mask' + B.mask.toFixed(1) + '.csv', out);
-    $('bProgText').textContent = '已导出逐历元数据 ' + B.runs.length + ' 项 × ' + B.runs[0].nEp + ' 历元。';
+    saveCsv('batch_runs_mask' + B.runs[0].mask.toFixed(1) + '.csv', out);
+    $('bProgText').textContent = '已导出逐历元数据 ' + B.runs.length + ' 项 × ' +
+      B.runs[0].nEp + ' 历元（合并全表）。';
   });
 
   $('bExpSum').addEventListener('click', () => {
@@ -3331,14 +4060,14 @@ Yaw 画的是轨迹 CSV 里的**原样罗盘方位角**。它跨 ±180° / 0° �
     const out = ['task,t0_utc,epochs,mean_visible,min_visible,max_visible,pmean,pmax,pnan_ratio,drop_rate,cover,ms'];
     B.runs.forEach(r => {
       const s = r.stats;
-      out.push([r.name, fmtDay(r.t0Utc).replace(' ', 'T'), r.nEp,
-                s.mean.toFixed(4), s.cmin, s.cmax,
-                isFinite(s.pmean) ? s.pmean.toFixed(4) : '',
-                isFinite(s.pmax) ? s.pmax.toFixed(4) : '',
-                s.pnan.toFixed(6), s.drop.toFixed(6), r.cover,
-                r.ms.toFixed(0)].join(','));
+      out.push(C.csvCell(r.name) + ',' + fmtDay(r.t0Utc).replace(' ', 'T') + ',' + r.nEp +
+                ',' + s.mean.toFixed(4) + ',' + s.cmin + ',' + s.cmax + ',' +
+                (isFinite(s.pmean) ? s.pmean.toFixed(4) : '') + ',' +
+                (isFinite(s.pmax) ? s.pmax.toFixed(4) : '') + ',' +
+                s.pnan.toFixed(6) + ',' + s.drop.toFixed(6) + ',' + r.cover + ',' +
+                r.ms.toFixed(0));
     });
-    saveCsv('batch_summary_mask' + B.mask.toFixed(1) + '.csv', out);
+    saveCsv('batch_summary_mask' + B.runs[0].mask.toFixed(1) + '.csv', out);
     $('bProgText').textContent = '已导出汇总 ' + B.runs.length + ' 行。';
   });
 
@@ -3368,6 +4097,12 @@ Yaw 画的是轨迹 CSV 里的**原样罗盘方位角**。它跨 ±180° / 0° �
                            geom: () => geomCache,
                            setOvl: k => { const e = $('ov_' + k); e.checked = !e.checked; ovlSync(); },
                            ovlSet: keys => { for (const k of OVL_KEYS) $('ov_' + k).checked = keys.indexOf(k) >= 0; ovlSync(); },
+                           // 导出相关的内部函数也开出来：让端到端测试能把
+                           // 「文件名消毒错了」和「zip 字节错了」区分成两个失败信号
+                           exp: { safeName: C.safeName, fileStem: C.fileStem, taskCsvName: C.taskCsvName,
+                                  makeZip, deflateRaw, downloadBlob, saveCsv, csvCell: C.csvCell,
+                                  EXP_COLS: C.EXP_COLS, epochCsvText: C.epochCsvText,
+                                  prnLabels: C.prnLabels },
                            batch: B, batchOpen: () => $('bBatch').click() };
 
   /* ---------------- 初始化 ---------------- */
