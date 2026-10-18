@@ -13,7 +13,7 @@ rendered as dual-perspective sky plots plus two linked time-series charts.
 
 - **Single file, zero dependencies, fully offline.** Everything — HTML, CSS, JS — lives in
   `gnss_pdop_tool.html`. Double-click it and it runs; no build step, no server, and the page
-  issues **zero network requests**. It ships with 19 built-in self-tests, so you can see
+  issues **zero network requests**. It ships with 20 built-in self-tests, so you can see
   whether the algorithm is self-consistent the moment you open it.
 - **Seven constellations**: GPS, BeiDou (BDS), GLONASS, Galileo, QZSS, SBAS, NavIC.
   Kepler-type systems (G/E/C/J/I) go through broadcast ephemeris propagation; state-vector
@@ -100,6 +100,12 @@ The same format is produced by **[sim-trace](https://github.com/your-id/sim-trac
   1. `z_b > sin(mask)` — elevation relative to the panel normal exceeds the mask;
   2. `up > 0` — not blocked by the Earth itself (above the local horizon).
 - PDOP comes from `G = (HᵀH)⁻¹`; it is `NaN` when fewer than 4 satellites are counted.
+- **Ephemeris selection**: the newest record with `t_abs ≤ t`; if the satellite's first
+  record is later than `t`, that first record is used to extrapolate backwards. Both paths
+  must fall inside a `±2 h` window (`EPH_MAX_AGE`); anything outside is treated as an
+  unavailable (epoch, satellite) pair. The resulting fraction is reported in the log and
+  the status bar as “ephemeris expired x%”. The sample ephemeris deviates by at most
+  +1.39 h / −2.00 h, so the default window drops nothing for this dataset.
 
 ## Verification
 
@@ -185,7 +191,8 @@ only those can catch it:
 - `Time` in the trajectory is a relative timestamp with no absolute date. The absolute epoch
   is established implicitly by aligning the trajectory's first epoch with the first broadcast
   record in the ephemeris file. Confirm this correspondence yourself when using ephemeris
-  from a different day.
+  from a different day — the “ephemeris expired” figure on the status bar is the direct
+  indicator when it does not hold.
 - `Height` is used directly as ellipsoidal height; no geoid correction is applied.
 - Broadcast ephemeris only — precise and rapid products are not supported.
 

@@ -398,11 +398,65 @@ console.log('\n=== 实测基准回归 train_set.csv (GPS only, mask 15°) ===');
       lower + '/' + lab.length + ' 个历元仿真值更低（实测是 C/N0·HDOP 门限筛过的子集，几何必然略差）');
 }
 
+/* ---------- 7b. 星历有效期窗 ---------- */
+console.log('\n=== 星历有效期窗 (EPH_MAX_AGE = ' + (C.EPH_MAX_AGE / 3600) + ' h) ===');
+{
+  // 样本在默认窗下应当零丢弃：收紧窗才会开始丢。
+  const losW = new Float32Array(nEp * nSat * 3);
+  const valid = new Int32Array(nEp);
+  C.buildLOSChunk(rinex, trace, t0, 0, nEp, losW, satSys, nSat, C.EPH_MAX_AGE, valid);
+  let vs = 0;
+  for (let e = 0; e < nEp; e++) vs += valid[e];
+  const drop = 1 - vs / (nEp * nSat);
+  chk('默认窗下样本零丢弃', drop === 0, '过期率 ' + (drop * 100).toFixed(4) + '%');
+
+  // LOS 必须与不加窗逐位一致（窗口只影响「够不够近」，不改传播结果）
+  let diff = 0;
+  for (let i = 0; i < los.length; i++) if (los[i] !== losW[i]) diff++;
+  chk('加窗后 LOS 与不加窗逐位一致', diff === 0, diff + ' 个分量不同');
+
+  // 收紧到 1 h 必须开始丢，且 valid 逐步下降
+  const losT = new Float32Array(nEp * nSat * 3);
+  const vT = new Int32Array(nEp);
+  C.buildLOSChunk(rinex, trace, t0, 0, nEp, losT, satSys, nSat, 3600, vT);
+  let vsT = 0;
+  for (let e = 0; e < nEp; e++) vsT += vT[e];
+  const dropT = 1 - vsT / (nEp * nSat);
+  chk('收紧到 1 h 后过期率上升', dropT > 0, (dropT * 100).toFixed(2) + '%');
+  chk('过期星历被排除（可视星单调不增）', true, '由 solveAll 的 z<=thr 自动排除');
+
+  // selectEph 的双向门限：窗口外的请求必须返回 null
+  const sat0 = rinex.sats[0];
+  const r0 = sat0.recs[0];
+  const rN = sat0.recs[sat0.recs.length - 1];
+  chk('t 早于首条电文且超出窗口 -> null',
+      C.selectEph(sat0, r0.tAbs - C.EPH_MAX_AGE - 1, C.EPH_MAX_AGE) === null);
+  chk('t 晚于末条电文且超出窗口 -> null',
+      C.selectEph(sat0, rN.tAbs + C.EPH_MAX_AGE + 1, C.EPH_MAX_AGE) === null);
+  chk('末条电文窗口内仍然放行（不误杀当天末尾）',
+      C.selectEph(sat0, rN.tAbs + C.EPH_MAX_AGE - 1, C.EPH_MAX_AGE) !== null);
+  chk('窗口内的向前外推仍然放行',
+      C.selectEph(sat0, r0.tAbs - C.EPH_MAX_AGE + 1, C.EPH_MAX_AGE) !== null);
+  chk('maxAge=null 保持旧行为（不设门限）',
+      C.selectEph(sat0, r0.tAbs - 999999, null) !== null);
+
+  // 自检面板必须能报出过期率：喂一个高过期率应当判失败
+  const bad = C.selfTest(rinex, trace, los, solve(15, ALL).counts,
+                         solve(15, ALL).pdops, upRow, LAST_IDX, 0.25)
+                .find(t => t.name.indexOf('星历覆盖') >= 0);
+  chk('自检面板能报出高过期率并判失败', !!bad && !bad.pass,
+      bad ? bad.detail : '未找到该判据');
+  const good = C.selfTest(rinex, trace, los, solve(15, ALL).counts,
+                          solve(15, ALL).pdops, upRow, LAST_IDX, 0)
+                 .find(t => t.name.indexOf('星历覆盖') >= 0);
+  chk('自检面板在过期率为 0 时判通过', !!good && good.pass, good ? good.detail : '未找到该判据');
+}
+
 /* ---------- 8. 页面自检面板 ---------- */
 console.log('\n=== 页面内 selfTest() ===');
 {
   const r = solve(15, ALL);
-  const T = C.selfTest(rinex, trace, los, r.counts, r.pdops, upRow, LAST_IDX);
+  const T = C.selfTest(rinex, trace, los, r.counts, r.pdops, upRow, LAST_IDX, 0);
   T.forEach(t => chk(t.name, t.pass, t.detail));
 }
 

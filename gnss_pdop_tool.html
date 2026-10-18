@@ -350,6 +350,15 @@ Yaw 画的是轨迹 CSV 里的**原样罗盘方位角**。它跨 ±180° / 0° �
   const KEP_SYS   = ['G', 'E', 'C', 'J', 'I'];
   const NLINE     = { G: 8, J: 8, E: 8, C: 8, I: 8, R: 4, S: 4 };
 
+  /* 广播星历有效期窗（秒）。两条方向都要卡：
+   *   向后  t 超出 toe + 窗   —— 记录太陈旧，谐波改正和钟差早已失真
+   *   向前  toe 超出 t + 窗  —— t 早于该星首条电文，只能拿还没广播的电文外推
+   * 后处理允许小范围向前外推（实测接收机基准就是这么对齐的），所以不是禁掉而是加窗：
+   * 没有上界时，换一份首条电文晚 6 h 的星历就会静默外推 6 h 且毫无提示。
+   * 2 h 取自 RINEX 广播星历的常规有效窗；样本星历的最大偏差为 +1.39 h / −2.00 h，
+   * 所以该默认值对本样本零丢弃。 */
+  const EPH_MAX_AGE = 7200;
+
   /* ---------- 定宽字段读取 ---------- */
   // RINEX 3.04：D19.12 字段，续行字段起点 0-based 下标 4，步长 19
   function fld(line, i) {
@@ -467,8 +476,11 @@ Yaw 画的是轨迹 CSV 里的**原样罗盘方位角**。它跨 ±180° / 0° �
     return { sats: list, header, firstEpoch, nRecords: list.reduce((a, s) => a + s.recs.length, 0), nDup: dup };
   }
 
-  /* ---------- 选星：取 tAbs <= t 中最新的一条 ---------- */
-  function selectEph(sat, tAbs) {
+  /* ---------- 选星：取 tAbs <= t 中最新的一条，并约束有效期 ---------- */
+  /* maxAge 省略或为 null = 不做窗口约束（仅供不需要门限的纯函数测试）。
+   * 超窗返回 null，调用方据此把该 (历元, 星) 记为不可用 —— LOS 保持零向量，
+   * solveAll 里 `z <= sin(掩角)` 对零向量恒成立，天然被排除，不需要额外标志位。 */
+  function selectEph(sat, tAbs, maxAge) {
     const r = sat.recs;
     if (!r.length) return null;
     let lo = 0, hi = r.length - 1, ans = null;
@@ -476,7 +488,13 @@ Yaw 画的是轨迹 CSV 里的**原样罗盘方位角**。它跨 ±180° / 0° �
       const m = (lo + hi) >> 1;
       if (r[m].tAbs <= tAbs) { ans = r[m]; lo = m + 1; } else hi = m - 1;
     }
-    return ans || r[0];
+    // ans 为 null 说明 t 早于该星首条电文，回退到 r[0] 做向前外推
+    const rec = ans || r[0];
+    if (maxAge != null) {
+      const age = tAbs - rec.tAbs;          // >0 陈旧，<0 超前
+      if (age > maxAge || -age > maxAge) return null;
+    }
+    return rec;
   }
 
   /* ---------- 星历传播（返回 ECEF，米） ---------- */
@@ -664,7 +682,9 @@ Yaw 画的是轨迹 CSV 里的**原样罗盘方位角**。它跨 ±180° / 0° �
     };
   }
 
-  function buildLOSChunk(rinex, trace, t0Gps, i0, i1, los, satSys, nsat) {
+  /* maxAge 传给 selectEph 做有效期门限；valid（可选，Int32Array(nEp)）回填每个历元
+   * 成功取到星历的卫星数，据此算过期率 —— 批量汇总里作为每个任务的质量指标。 */
+  function buildLOSChunk(rinex, trace, t0Gps, i0, i1, los, satSys, nsat, maxAge, valid) {
     const d = trace.data;
     const S = rinex.sats;
     for (let e = i0; e < i1; e++) {
@@ -672,8 +692,9 @@ Yaw 画的是轨迹 CSV 里的**原样罗盘方位角**。它跨 ±180° / 0° �
       const rx = llhToEcef(d.Latitude[e], d.Longitude[e], d.Height[e]);
       const C = dcmEnuToBody(d.Yaw[e], d.Pitch[e], d.Roll[e]);
       const base = e * nsat * 3;
+      let nv = 0;
       for (let s = 0; s < S.length; s++) {
-        const rec = selectEph(S[s], t);
+        const rec = selectEph(S[s], t, maxAge);
         if (!rec) continue;
         const p = propagate(S[s].sys, rec, t);
         const v = enuFromEcef(p[0] - rx[0], p[1] - rx[1], p[2] - rx[2],
@@ -684,7 +705,9 @@ Yaw 画的是轨迹 CSV 里的**原样罗盘方位角**。它跨 ±180° / 0° �
         los[o]     = (C[0] * E + C[1] * N + C[2] * U) / rho;
         los[o + 1] = (C[3] * E + C[4] * N + C[5] * U) / rho;
         los[o + 2] = (C[6] * E + C[7] * N + C[8] * U) / rho;
+        nv++;
       }
+      if (valid) valid[e] = nv;
     }
   }
 
@@ -737,7 +760,7 @@ Yaw 画的是轨迹 CSV 里的**原样罗盘方位角**。它跨 ±180° / 0° �
   }
 
   /* ---------- 自检 ---------- */
-  function selfTest(rinex, trace, los, counts, pdops, upRow, satIdx) {
+  function selfTest(rinex, trace, los, counts, pdops, upRow, satIdx, dropRate) {
     const T = [];
     const add = (name, pass, detail) => T.push({ name, pass: !!pass, detail: detail || '' });
 
@@ -974,6 +997,13 @@ Yaw 画的是轨迹 CSV 里的**原样罗盘方位角**。它跨 ±180° / 0° �
             'min ' + f[0].toFixed(3) + ' / 中位 ' + f[Math.floor(f.length/2)].toFixed(3) +
             ' / 均值 ' + mean.toFixed(3) + ' / max ' + f[f.length-1].toFixed(3));
       }
+      // 8. 星历有效期窗：这判的是**输入数据**，不是算法。过期率高说明锚定的
+      // 绝对时刻落在了星历覆盖之外，此时上面所有数值都不可信，必须报出来。
+      if (dropRate != null) {
+        add('星历覆盖当前时段（过期率 < 1%）', dropRate < 0.01,
+            '±' + (EPH_MAX_AGE / 3600) + ' h 窗外 ' + (dropRate * 100).toFixed(2) +
+            '% 的 (历元,星) 组合被判不可用' + (dropRate >= 0.01 ? ' —— 结果不可信，请检查起始时刻' : ''));
+      }
     }
     return T;
   }
@@ -1021,7 +1051,7 @@ Yaw 画的是轨迹 CSV 里的**原样罗盘方位角**。它跨 ±180° / 0° �
 
   root.GNSSCore = {
     WGS84_A, WGS84_E2, MU, OMEGA_E, CLIGHT, D2R, R2D, GPS_EPOCH,
-    SYS_INFO, SYS_ORDER, KEP_SYS, NLINE,
+    SYS_INFO, SYS_ORDER, KEP_SYS, NLINE, EPH_MAX_AGE,
     parseRinex, parseTraceCSV, selectEph, propagate, llhToEcef, matMul3, enuFromEcef,
     dcmEnuToBody, pdopFromQ, buildLOSChunk, attUpRow, solveAll, selfTest, matInv4,
     utcToGpsSec, gpsSecToUTC
@@ -1227,6 +1257,7 @@ Yaw 画的是轨迹 CSV 里的**原样罗盘方位角**。它跨 ±180° / 0° �
     S.upRow = C.attUpRow(S.trace, nEp);   // 逐历元的「天顶在机体系中的方向」，供地球遮挡判据用
     S.counts = new Int32Array(nEp);
     S.pdops = new Float64Array(nEp);
+    S.valid = new Int32Array(nEp);         // 每历元成功取到星历的卫星数
 
     const bar = $('prog');
     bar.classList.add('on');
@@ -1238,16 +1269,24 @@ Yaw 画的是轨迹 CSV 里的**原样罗盘方位角**。它跨 ±180° / 0° �
     let i = 0;
     function step() {
       const j = Math.min(nEp, i + CHUNK);
-      C.buildLOSChunk(S.rinex, S.trace, S.t0Gps, i, j, S.los, S.satSys, S.nSat);
+      C.buildLOSChunk(S.rinex, S.trace, S.t0Gps, i, j, S.los, S.satSys, S.nSat, C.EPH_MAX_AGE, S.valid);
       i = j;
       fill.style.width = (100 * i / nEp).toFixed(1) + '%';
       if (i < nEp) { requestAnimationFrame(step); return; }
       bar.classList.remove('on'); fill.style.width = '0';
       CH.xa = 0; CH.xb = S.trace.n - 1; CH.hover = -1;   // 换数据必须复位视窗，否则沿用上次的缩放
       SKY.ep = 0;
+      // 过期率：超出 ±EPH_MAX_AGE 窗、(历元,星) 被判不可用的比例
+      let vs = 0;
+      for (let e = 0; e < nEp; e++) vs += S.valid[e];
+      S.dropRate = 1 - vs / (nEp * S.nSat);
       recompute();
       log('LOS 推算完成，耗时 ' + (performance.now() - t0).toFixed(0) + ' ms（缓存 ' +
           (S.los.byteLength / 1048576).toFixed(1) + ' MB）', 'g');
+      if (S.dropRate > 0) {
+        log('警告: ' + (S.dropRate * 100).toFixed(2) + '% 的 (历元,星) 组合超出 ±' +
+            (C.EPH_MAX_AGE / 3600) + ' h 星历有效期，已按不可用处理 —— 检查星历是否覆盖当前时段', 'w');
+      }
       S.busy = false;
       $('bRun').disabled = false;
       $('bExp').disabled = false;
@@ -1286,7 +1325,7 @@ Yaw 画的是轨迹 CSV 里的**原样罗盘方位角**。它跨 ±180° / 0° �
   $('bSelf').addEventListener('click', () => {
     const idx = [];
     for (let s = 0; s < S.nSat; s++) if (S.sys.has(S.satSys[s])) idx.push(s);
-    const T = C.selfTest(S.rinex, S.trace, S.los, S.counts, S.pdops, S.upRow, idx);
+    const T = C.selfTest(S.rinex, S.trace, S.los, S.counts, S.pdops, S.upRow, idx, S.dropRate);
     const bad = T.filter(t => !t.pass).length;
     log('自检: ' + (T.length - bad) + '/' + T.length + ' 通过', bad ? 'e' : 'g');
     T.forEach(t => log('  [' + (t.pass ? '通过' : '失败') + '] ' + t.name + (t.detail ? '  ' + t.detail : ''),
@@ -1320,9 +1359,10 @@ Yaw 画的是轨迹 CSV 里的**原样罗盘方位角**。它跨 ±180° / 0° �
 
     const sysName = Array.from(S.sys).sort().map(s => C.SYS_INFO[s].name).join(' + ') || '（无）';
     $('s1').textContent = n + ' 历元 · ' + sysName + ' · 平均 ' + (tot / n).toFixed(1) + ' 颗';
-    $('s2').textContent = isFinite(pmin)
+    $('s2').textContent = (isFinite(pmin)
       ? 'PDOP ' + pmin.toFixed(2) + ' ~ ' + pmax.toFixed(2) + ' · 重解 ' + (S.lastMs || 0).toFixed(0) + ' ms'
-      : 'PDOP 全部不可解（可视星 < 4）';
+      : 'PDOP 全部不可解（可视星 < 4）') +
+      (S.dropRate > 0 ? ' · 星历过期 ' + (S.dropRate * 100).toFixed(2) + '%' : '');
 
     // 每星座当前可视星 —— 必须跟随光标所在的历元（SKY.ep），不是恒取第 0 个历元
     if (S.los && S.upRow) {

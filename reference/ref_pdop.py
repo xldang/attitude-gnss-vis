@@ -40,6 +40,12 @@ GPS_EPOCH = datetime.date(1980, 1, 6)
 KEP = ("G", "E", "C", "J", "I")          # 注意：必须用 tuple/list 判成员，
 NL = {"G": 8, "J": 8, "E": 8, "C": 8, "I": 8, "R": 4, "S": 4}   # 'S' in 'GREJCIS' 为真！
 
+# 广播星历有效期窗（秒），与 gnss_pdop_tool.html 的 EPH_MAX_AGE 保持一致。
+# 两个方向都要卡：向后是记录太陈旧，向前是 t 早于该星首条电文。
+# 后处理允许小范围向前外推，所以不是禁掉而是加窗 —— 没有上界时，
+# 换一份首条电文晚数小时的星历就会静默外推数小时且毫无提示。
+MAX_AGE = 7200
+
 RNX = os.path.join(ROOT, "samples", "rnx", "BRDM00DLR_S_20262690000_01D_MN.rnx")
 CSVF = os.path.join(ROOT, "samples", "traces", "flight_shanghai_xian_5000.csv")
 DUMP = os.path.join(ROOT, "build", "ref_all15.json")
@@ -119,15 +125,24 @@ def parse_rinex(path):
     return out, leap
 
 
-def pick(sat, t):
-    """取 t_abs <= t 中最新的一条；没有则取最早一条。"""
+def pick(sat, t, max_age=MAX_AGE):
+    """取 t_abs <= t 中最新的一条；没有则回退到最早一条做向前外推。
+
+    两种回退/选中都必须落在 ±max_age 窗内，超窗返回 None —— 调用方按该星
+    该历元不可用处理。max_age=None 退化为旧行为（不设门限）。
+    """
     prev = None
     for r in sat[2]:
         if r["t_abs"] <= t:
             prev = r
         else:
             break
-    return prev or sat[2][0]
+    rec = prev if prev is not None else sat[2][0]
+    if max_age is not None:
+        age = t - rec["t_abs"]          # >0 陈旧，<0 超前
+        if age > max_age or -age > max_age:
+            return None
+    return rec
 
 
 def propagate(s, r, t):
@@ -210,6 +225,7 @@ def solve(rows, sats, t0, mask, sel=None):
     tot = 0
     sp = np_ = 0
     nmin, nmax, pmin, pmax = 1e9, -1, 1e9, -1e9
+    tot_drop = 0      # 全程因超出 ±MAX_AGE 而被判不可用的 (历元,星) 次数
     for row in rows:
         t = t0 + float(row["Time"])
         lat = float(row["Latitude"])
@@ -227,6 +243,9 @@ def solve(rows, sats, t0, mask, sel=None):
             if sel and sat[0] not in sel:
                 continue
             r = pick(sat, t)
+            if r is None:
+                tot_drop += 1
+                continue
             p = propagate(sat[0], r, t)
             dx, dy, dz = p[0] - rx[0], p[1] - rx[1], p[2] - rx[2]
             rho = math.sqrt(dx * dx + dy * dy + dz * dz)
@@ -256,8 +275,10 @@ def solve(rows, sats, t0, mask, sel=None):
             sp += v; np_ += 1
             pmin, pmax = min(pmin, v), max(pmax, v)
     N = len(rows)
+    nsel = sum(1 for s in sats if not sel or s[0] in sel)
     return dict(mean=tot / N, nmin=nmin, nmax=nmax, pmean=sp / N,
-                pmin=pmin, pmax=pmax, per=per)
+                pmin=pmin, pmax=pmax, per=per,
+                drop=(tot_drop / (N * nsel)) if nsel else 0.0)
 
 
 def main():
