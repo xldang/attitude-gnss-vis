@@ -15,4 +15,5 @@ npm-debug.log*
 .DS_Store
 Thumbs.db
 *.swp
-samples/traces/*副本*.csv
+# 本地临时副本（用户拿样本另存后反复试批量，名字里带「副本」）
+samples/traces/*副本*
