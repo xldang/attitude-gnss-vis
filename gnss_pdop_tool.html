@@ -36,6 +36,22 @@ input[type=datetime-local]{width:100%;padding:5px 8px;border:1px solid var(--lin
   font:12.5px var(--mono);background:#fff}
 .fname{font:11px var(--mono);color:var(--muted);margin-top:3px;word-break:break-all;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* 批量面板的自绘文件选择器：原生 input 藏起来，文件名由 .fname 自己渲染。
+   固定文件与批量文件共用这一套，多选时 .fname 也只是多列几个名字。 */
+.fpick{display:flex;align-items:center;gap:6px 8px;margin-top:5px;flex-wrap:wrap}
+/* 选择器必须带上 input[type=file]：上面那条同名规则特指度更高，只写 .finput 的话
+   width 会被它的 width:100% 压过去 —— input 虽被 clip 掉了，却仍按整页宽度绝对定位，
+   透明地盖在输入面板上，把「选择文件」按钮的点击全吃掉。 */
+input[type=file].finput{position:absolute;width:1px;height:1px;padding:0;margin:-1px;
+  overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
+.fbtn{flex:none;display:inline-block;padding:5px 11px;border:1px solid var(--line);
+  border-radius:6px;background:#fff;font:12px inherit;cursor:pointer;user-select:none}
+.fbtn:hover{border-color:var(--accent);color:var(--accent)}
+input[type=file].finput:focus-visible + .fbtn{outline:2px solid var(--accent);outline-offset:2px}
+/* 文件名另起一行、占满整宽：批量面板这一栏只有 326 px，名字跟在按钮后面会被省略号
+   截掉，而「· 5000 行」「等 3 份」「（1 份解析失败）」这些才是要看的信息。 */
+.fpick .fname{flex:1 0 100%;min-width:0;margin-top:0;text-align:left}
+.fpick .fname em{font-style:normal;color:var(--muted)}
 .row{display:flex;gap:7px;margin-top:9px}
 .row > *{flex:1}
 button{font:12.5px inherit;padding:6px 10px;border:1px solid var(--line);border-radius:6px;
@@ -404,13 +420,23 @@ Yaw 画的是轨迹 CSV 里的**原样罗盘方位角**。它跨 ±180° / 0° �
 
         <div class="panel">
           <h2>输入</h2>
+          <!-- 原生 file input 的那一行（「未选择任何文件」/「N 个文件」）不可程序化更新：
+               input.files 只读，而切模式时要显示的是**上一个 slot** 的文件名，
+               与 input 里存的那份并不是一回事。所以把 input 藏起来，文件名一律由
+               下面的 .fname 自己渲染 —— 单一真相来源，固定文件与批量文件同此一套。 -->
           <label id="bLblFixed">固定文件（轨迹 CSV）</label>
-          <input type="file" id="bFixed" accept=".csv,text/csv">
-          <div class="fname" id="bFixedName">未选择</div>
+          <div class="fpick">
+            <input type="file" id="bFixed" class="finput" accept=".csv,text/csv">
+            <label class="fbtn" for="bFixed">选择文件</label>
+            <span class="fname" id="bFixedName">未选择</span>
+          </div>
 
           <label style="margin-top:9px" id="bLblMany">批量文件（多份星历）</label>
-          <input type="file" id="bMany" accept=".rnx,.RINEX,.txt,text/plain" multiple>
-          <div class="fname" id="bManyName">未选择</div>
+          <div class="fpick">
+            <input type="file" id="bMany" class="finput" accept=".rnx,.RINEX,.txt,text/plain" multiple>
+            <label class="fbtn" for="bMany">选择文件</label>
+            <span class="fname" id="bManyName">未选择</span>
+          </div>
         </div>
 
         <div class="panel">
@@ -2550,7 +2576,10 @@ Yaw 画的是轨迹 CSV 里的**原样罗盘方位角**。它跨 ±180° / 0° �
    * 一起扔掉。真正该做的不是清空，而是让两种模式的现场各自活着。 */
   function newSlot() {
     return {
-      files: { fixed: null, many: [] },  // 原始 File，供标签回填与跨模式复用
+      // 原始 File，供标签回填与跨模式复用；fixedErr 单独记固定文件的解析错误，
+      // 好让 renderFileNames 一处画完「未选择 / 未解析 / 解析失败 / 已就绪」四种状态
+      files: { fixed: null, fixedErr: '', many: [] },
+      loadGen: 0,                        // 文件解析轮次代号：新的选择作废旧的解析
       fixed: null,                       // { name, kind, obj }
       many: [],                          // [{ name, kind, obj, err }]
       tasks: [],
@@ -2615,48 +2644,56 @@ Yaw 画的是轨迹 CSV 里的**原样罗盘方位角**。它跨 ±180° / 0° �
     $('bFixed').accept = fixedKind() === 'rinex' ? accR : accC;
     $('bMany').accept = manyKind() === 'rinex' ? accR : accC;
     syncHmsHint();
-    resetFileInputs();      // 必须放在 accept 赋值之后，克隆才会带上新的 accept
     restoreSlot();          // 换现场，不是清空现场
   }
 
-  /* input.files 不可程序化赋值，于是切模式后浏览器自带的「2 个文件」会停在另一个
-   * 模式那一份上，和我们自己写的标签当场打架 —— 用户看到「2 个文件」下一行写着
-   * 「1 份」。替换整个元素是唯一能程序化清空 file input 的办法。
-   *
-   * 必须 createElement 而**不能** cloneNode：实测 Chrome 的 cloneNode 会把
-   * FileList 一起带过去（克隆出来的元素 files.length 仍是 1），新建元素才真的是空的。 */
-  function resetFileInputs() {
-    for (const [id, fn] of [['bFixed', loadFixed], ['bMany', loadMany]]) {
-      const old = $(id);
-      const fresh = document.createElement('input');
-      fresh.type = 'file';
-      for (const a of Array.from(old.attributes)) fresh.setAttribute(a.name, a.value);
-      fresh.addEventListener('change', fn);
-      old.parentNode.replaceChild(fresh, old);
-    }
-  }
-
-  /* 把当前 slot 的现场回填到界面上。纯计算 + 已解析对象，不触发重新读盘。
-   * 注意 input.files 无法程序化赋值，所以文件名的权威来源是 slot.files，
-   * 标签按它回填；浏览器自带的文件名可能还停在另一个模式的那份，属预期。 */
+  /* 把当前 slot 的现场回填到界面上。纯计算 + 已解析对象，不触发重新读盘。 */
   function restoreSlot() {
-    const s = slot(), fs = s.files;
-    // 原生 input 被清空了（见 resetFileInputs），所以标签上补一句「已保留」，
-    // 否则「未选择任何文件」紧跟着「xxx.csv · 5000 行」会看着自相矛盾。
-    $('bFixedName').textContent = !fs.fixed ? '未选择'
-      : fs.fixed.name + (s.fixed ? ' · ' + sizeLabel(fixedKind(), s.fixed.obj) : ' · 未解析') + ' · 已保留';
-    const nF = fs.many.length, nOk = s.many.filter(m => m.obj).length;
-    $('bManyName').textContent = !nF ? '未选择'
-      : nF + ' 份' + (nOk < nF ? '（' + (nF - nOk) + ' 份解析失败）' : '') + ' · 已保留';
+    renderFileNames();
     // 任务表按已解析对象重算一遍：纯函数，微秒级，但能保证起始时刻改动后两边都跟上
     rebuildTasks();
     // 结果面板：该模式跑过就恢复，没跑过就收起来
+    const s = slot();
     if (s.runs.length) { $('bResPanel').style.display = ''; renderResults(); }
     else $('bResPanel').style.display = 'none';
   }
 
   const sizeLabel = (kind, obj) =>
     kind === 'rinex' ? obj.sats.length + ' 颗星' : obj.n + ' 行';
+
+  /* 文件名的**唯一**来源是 slot.files —— 原生 file input 那一行已被隐藏。
+   * 固定文件与批量文件走同一条渲染路径，多选时按份数缩写，完整名单挂在 title 上。
+   * 全部走 textContent 赋值，文件名里的 < & 天然安全。 */
+  function renderFileNames() {
+    const s = slot(), fs = s.files;
+    const one = $('bFixedName'), many = $('bManyName');
+
+    if (!fs.fixed) {
+      one.textContent = '未选择';
+      one.removeAttribute('title');
+    } else {
+      one.textContent = fs.fixed.name + ' · ' +
+        (s.fixed ? sizeLabel(fixedKind(), s.fixed.obj)
+                 : fs.fixedErr ? '解析失败：' + fs.fixedErr : '未解析');
+      one.title = one.textContent;
+    }
+
+    const names = fs.many.map(f => f.name);
+    if (!names.length) {
+      many.textContent = '未选择';
+      many.removeAttribute('title');
+      return;
+    }
+    const nOk = s.many.filter(m => m.obj).length;
+    /* 一份写全名，两份并排，超过两份就只留第一个加「等 N 份」：星历文件名本来就长，
+     * 两份并排必然被省略号截在「等 N 份」之前，而份数才是这里要看的东西。 */
+    many.textContent = (names.length === 1 ? names[0]
+      : names.length === 2 ? names.join('、')
+      : names[0] + ' 等 ' + names.length + ' 份') +
+      (nOk < names.length ? '（' + (names.length - nOk) + ' 份解析失败）' : '');
+    many.title = names.join('\n') + '\n共 ' + names.length +
+      ' 份，其中 ' + nOk + ' 份解析成功';
+  }
 
   Array.from(document.getElementsByName('bmode')).forEach(r =>
     r.addEventListener('change', () => { if (r.checked) { B.mode = +r.value; syncMode(); } }));
@@ -2721,15 +2758,25 @@ Yaw 画的是轨迹 CSV 里的**原样罗盘方位角**。它跨 ±180° / 0° �
     const f = $('bFixed').files && $('bFixed').files[0];
     if (!f) return;
     const kind = fixedKind();
-    slot().files.fixed = f;          // 先记下 File，解析失败也不至于把文件名丢了
+    const s = slot();
+    const gen = ++s.loadGen;          // 后一次选择作废前一次，见 newSlot().loadGen
+    s.files.fixed = f;                // 先记下 File，解析失败也不至于把文件名丢了
+    s.files.fixedErr = '';
+    B.fixed = null;
+    renderFileNames();               // 立刻显示文件名，别让用户对着空框等解析
     try {
       const obj = await parseFile(f, kind);
+      if (gen !== s.loadGen) return;
       B.fixed = { name: f.name, kind, obj };
-      $('bFixedName').textContent = f.name + ' · ' + sizeLabel(kind, obj);
+      s.files.fixedErr = '';
     } catch (e) {
+      if (gen !== s.loadGen) return;
       B.fixed = null;
-      $('bFixedName').textContent = f.name + ' · 解析失败：' + e.message;
+      s.files.fixedErr = e.message;
     }
+    /* 解析落定后再渲染一次：上面的那次只会画出「未解析」，不补这一下，
+     * 文件名会一直停在「未解析」直到下一次切模式或改起始时刻。 */
+    renderFileNames();
     rebuildTasks();
   }
 
@@ -2742,24 +2789,28 @@ Yaw 画的是轨迹 CSV 里的**原样罗盘方位角**。它跨 ±180° / 0° �
     const files = Array.from($('bMany').files || []);
     if (!files.length) return;
     const kind = manyKind();
-    slot().files.many = files;
+    const s = slot();
+    /* 一轮解析要好几秒，这期间用户完全可以再选一次。两个循环都往 B.many 里塞，
+     * 结果就是任务表里出现重复任务。所以每轮带一个代号，后一轮开始即作废前一轮。 */
+    const gen = ++s.loadGen;
+    s.files.many = files;
     B.many = [];
-    $('bManyName').textContent = '解析中 0/' + files.length + '…';
-    let nOk = 0;
+    $('bManyName').textContent = '解析中 0/' + files.length + ' 份…';
     for (let i = 0; i < files.length; i++) {
       const f = files[i];
-      $('bManyName').textContent = '解析中 ' + (i + 1) + '/' + files.length + '：' + cut(f.name, 28);
+      $('bManyName').textContent = '解析中 ' + (i + 1) + '/' + files.length + ' 份：' + cut(f.name, 28);
       await yieldUI();
+      if (gen !== s.loadGen) return;
       try {
         const obj = await parseFile(f, kind);
+        if (gen !== s.loadGen) return;
         B.many.push({ name: f.name, kind, obj });
-        nOk++;
       } catch (e) {
+        if (gen !== s.loadGen) return;
         B.many.push({ name: f.name, kind, obj: null, err: e.message });
       }
     }
-    $('bManyName').textContent = files.length + ' 份' + (nOk < files.length
-      ? '（' + (files.length - nOk) + ' 份解析失败）' : '');
+    renderFileNames();               // 解析完成，换回正式文件名（列表 + 失败计数）
     rebuildTasks();
   }
   $('bFixed').addEventListener('change', loadFixed);

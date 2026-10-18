@@ -59,7 +59,7 @@ attitude-gnss-vis/
 │  └─ ref_pdop.py           Independent Python implementation (numerical baseline for the JS)
 ├─ test/
 │  ├─ test_core.js          Node core regression: JS vs Python, epoch by epoch
-│  ├─ e2e_browser.js        Browser end-to-end: drives real Chrome over CDP, 183 assertions
+│  ├─ e2e_browser.js        Browser end-to-end: drives real Chrome over CDP, 199 assertions
 │  ├─ fixtures/
 │  │  ├─ train_set.csv      Real receiver measurements (regression fixture)
 │  │  └─ sky-ref/           Measured sky-plot screenshots, one per epoch of train_set.csv
@@ -134,6 +134,27 @@ a parameter, switch back, and it is obvious whether a re-run is due.
 
 (Mode selection is locked while a batch is running — otherwise in-flight results would be
 written into the other mode's workspace.)
+
+### How file names are shown
+
+The browser's own "no file chosen / N files" line cannot be updated programmatically
+(`input.files` is read-only), and after a mode switch it refers to the *other* mode's
+selection rather than the one in use. So the native input is hidden and the file name is
+rendered by the page itself — **fixed file and multi-select file use the same path**:
+
+| State | Shown |
+|---|---|
+| Nothing picked | `未选择` |
+| Parsing | `解析中 3/8 份：<current file>` |
+| Ready | `xxx.rnx · 96 sats` / `xxx.csv · 5000 rows` |
+| Failed | `xxx.rnx · parse failed: trajectory CSV is missing columns: …` |
+
+Multi-select is abbreviated by count so the count is never cut off by the ellipsis: **1
+file** shows the full name, **2 files** are joined with `、`, **≥3 files** become
+`first 等 N 份`. The complete list plus "N files total, M parsed successfully" goes into
+the tooltip, and the number of failures follows directly (`… 等 8 份（2 份解析失败）`) —
+reporting "8 files chosen" without saying 2 of them never made it in is the display most
+likely to be misread.
 
 ### How the start instant is anchored
 

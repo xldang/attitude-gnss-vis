@@ -1034,6 +1034,15 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     await evalJS('document.getElementById("bBatch").click()');
     await sleep(300);
     chk('批量浮层已打开', await evalJS('document.getElementById("batch").classList.contains("on")'));
+    /* 原生 file input 那一行（「未选择任何文件 / N 个文件」）不可程序化更新：
+     * input.files 只读。所以文件名改由自绘的 .fname 承载，此处确认初始态。 */
+    chk('初始态两个文件名均为「未选择」', await evalJS(
+      'document.getElementById("bFixedName").textContent === "未选择" &&' +
+      'document.getElementById("bManyName").textContent === "未选择"'),
+      await evalJS('document.getElementById("bFixedName").textContent + " / " +' +
+                   'document.getElementById("bManyName").textContent'));
+    chk('「未选择」时无 title 提示残留', await evalJS(
+      '!document.getElementById("bManyName").hasAttribute("title")'));
     // 模式 ① 固定的是**轨迹**、批量的是**星历**（早期版本这里写反过）
     chk('模式① 固定文件标签 = 轨迹、批量标签 = 星历',
         await evalJS('document.getElementById("bLblFixed").textContent.includes("轨迹") &&' +
@@ -1047,11 +1056,20 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
         (await evalJS('GNSS_VIEW.state.counts.length')) === 5000);
 
     const doc2 = await send('DOM.getDocument', { depth: -1 });
-    // 8 MB 星历解析要时间，不能用固定 sleep —— 轮询到条件成立为止
+    // 8 MB 星历解析要时间，不能用固定 sleep —— 轮询到条件成立为止。
+    // DOM.setFileInputFiles 只负责把文件填进 input；change 的派发时机在无头 Chrome
+    // 下并不稳定（实测多数时候几百毫秒就来，个别情况几十秒都不来）。所以先给原生
+    // 派发 1.2 s 的宽限期，还不动才补一个 change —— 页面的处理器只读 input.files，
+    // 值已由 CDP 填好，补派发与真实用户选文件走的是同一条路径。
     const setFiles = async (sel, fl, until) => {
       const q = await send('DOM.querySelector', { nodeId: doc2.result.root.nodeId, selector: sel });
       await send('DOM.setFileInputFiles', { files: fl, nodeId: q.result.nodeId });
-      for (let i = 0; i < 200; i++) { await sleep(200); if (await evalJS(until)) return true; }
+      for (let i = 0; i < 200; i++) {
+        await sleep(200);
+        if (await evalJS(until)) return true;
+        if (i === 5) await evalJS('document.querySelector(' + JSON.stringify(sel) + ')' +
+                                  '.dispatchEvent(new Event("change"))');
+      }
       return false;
     };
     const okFixed = await setFiles('#bFixed', [CSV],
@@ -1176,7 +1194,12 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     const setF3 = async (sel, fl, until) => {
       const q = await send('DOM.querySelector', { nodeId: doc3.result.root.nodeId, selector: sel });
       await send('DOM.setFileInputFiles', { files: fl, nodeId: q.result.nodeId });
-      for (let i = 0; i < 200; i++) { await sleep(200); if (await evalJS(until)) return true; }
+      for (let i = 0; i < 200; i++) {
+        await sleep(200);
+        if (await evalJS(until)) return true;
+        if (i === 5) await evalJS('document.querySelector(' + JSON.stringify(sel) + ')' +
+                                  '.dispatchEvent(new Event("change"))');
+      }
       return false;
     };
     chk('模式② 固定星历解析完成', await setF3('#bFixed', [RNX],
@@ -1272,26 +1295,37 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
         back.means.join(',') + ' vs ' + before.means.join(','));
     chk('切回模式① 后结果面板重新显示', await evalJS(
       'document.getElementById("bResPanel").style.display !== "none"'));
-    /* input.files 无法程序化赋值：若不清空，浏览器自带的「2 个文件」会停在另一个
-     * 模式那一份上，与我们自己写的标签「1 份」当场矛盾。克隆替换是唯一解法。 */
-    chk('切模式后浏览器自带的文件名不留上一模式的残留',
-        await evalJS('document.getElementById("bFixed").files.length===0 &&' +
-                     'document.getElementById("bMany").files.length===0'));
+    /* 文件名的唯一来源是 slot.files，原生 input 那一行已被隐藏 —— 它显示的
+     * 「未选择任何文件 / N 个文件」不可程序化更新（input.files 只读），且切模式后
+     * 指的是另一个 slot 的文件，与实际用的不是一回事。 */
+    const vis = async () => await evalJS('(()=>{const a=getComputedStyle(document.getElementById("bFixed"));' +
+      'return {clip:a.clip, op:a.opacity, w:a.width, name:document.getElementById("bFixedName").textContent}})()');
+    const v = await vis();
+    chk('原生 file input 已被隐藏（不再显示「未选择任何文件」）',
+        v.clip !== 'auto' && v.w === '1px', JSON.stringify(v));
+    /* 被 clip 掉 ≠ 不挡事：input[type=file] 那条 width:100% 特指度更高，一旦压过
+     * .finput 的 width:1px，这个透明元素就会铺满整页盖在面板上，吃掉按钮点击。 */
+    chk('隐藏的 input 不再压在「选择文件」按钮上', await evalJS(
+      '(()=>{const b=document.querySelector(\'label[for="bFixed"]\');const r=b.getBoundingClientRect();' +
+      'const e=document.elementFromPoint(r.left+r.width/2,r.top+r.height/2);' +
+      'return b.contains(e)||e===b})()'));
+    chk('文件名由自绘的 .fname 承载', v.name.includes('flight_shanghai_xian'), v.name);
     chk('切模式后 file input 的 accept 已随模式更新', await evalJS(
       'document.getElementById("bFixed").accept.indexOf(".csv")>=0 &&' +
       'document.getElementById("bMany").accept.indexOf(".rnx")>=0'),
       await evalJS('document.getElementById("bFixed").accept + " | " + document.getElementById("bMany").accept'));
-    chk('清空原生 input 后仍能重新选文件', await evalJS(
-      '(()=>{document.getElementById("bMany").dispatchEvent(new Event("change"));return true})()'));
     chk('切回模式① 后预览表重新渲染', await evalJS(
       'document.getElementById("bPrev").querySelectorAll("table.btab tr").length > 1'));
     chk('固定文件标签按模式① 回填为轨迹', await evalJS(
       'document.getElementById("bFixedName").textContent.includes("flight_shanghai_xian")'),
       await evalJS('document.getElementById("bFixedName").textContent'));
-    chk('原生 input 已清空时标签注明「已保留」', await evalJS(
-      'document.getElementById("bFixedName").textContent.includes("已保留") &&' +
-      'document.getElementById("bManyName").textContent.includes("已保留")'),
-      await evalJS('document.getElementById("bFixedName").textContent + " / " + document.getElementById("bManyName").textContent'));
+    /* 多选时的文件名渲染：一份写全名，两份用「、」并排，超过两份缩成「第一个 等 N 份」，
+     * 完整名单挂在 title 上。这里模式① 选的是同一份星历两次，所以两个名字相同。 */
+    const mn = await evalJS('(()=>{const e=document.getElementById("bManyName");' +
+      'return {text:e.textContent, title:e.title}})()');
+    chk('多选文件名按「、」并排列出', mn.text.split('、').length === 2, mn.text);
+    chk('多选时给出解析成功份数', mn.title.includes('共 2 份，其中 2 份解析成功'), mn.title);
+    chk('多选文件名不残留「解析中」', !mn.text.includes('解析中'), mn.text);
     chk('结果标题标注了跑这批时的掩角', await evalJS(
       'document.getElementById("bResMeta").textContent.includes("掩角 " + GNSS_VIEW.batch.slots[1].runs[0].mask.toFixed(1))'),
       await evalJS('document.getElementById("bResMeta").textContent'));
@@ -1350,8 +1384,8 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     await evalJS('(()=>{const h=document.getElementById("bHms");h.value="00:00:00";h.dispatchEvent(new Event("change",{bubbles:true}))})()');
     await sleep(250);
 
-    /* input.files 无法程序化赋值，切模式后浏览器自带的文件名仍停在另一模式那份。
-     * 所以「切回来直接重跑，不重新选文件」必须成立 —— 否则用户会以为自己没选对。 */
+    /* 文件名虽已自绘、input.files 的跨模式残留也不再可见，但真正的判据是行为：
+     * 「切回来直接重跑，不重新选文件」必须成立 —— 否则用户会以为自己没选对。 */
     chk('切回后无需重选文件即可直接重跑', await evalJS(
       '!document.getElementById("bGo").disabled'));
     await evalJS('document.getElementById("bGo").click()');
@@ -1372,6 +1406,87 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     const rerun = await evalJS('GNSS_VIEW.batch.runs.map(r=>+r.stats.mean.toFixed(6))');
     chk('不重选文件重跑得到同一批结果',
         JSON.stringify(rerun) === JSON.stringify(back.means), rerun.join(','));
+  }
+
+  console.log('\n=== 批量任务：文件名显示（多选 >2 份 / 解析失败）===');
+  {
+    /* 用户报的现象：选完文件，界面还挂着「未选择任何文件」。根因是浏览器那一行
+     * 不可程序化更新（input.files 只读）。改成自绘文件名后，多选是这里最需要
+     * 额外照顾的一档：一份可以整名展示，十几份不能把输入框撑爆，也不能只报个数。 */
+    const nameEl = 'document.getElementById("bManyName")';
+    const doc3 = await send('DOM.getDocument', { depth: -1 });
+    const pick = async (fl, until) => {
+      const q = await send('DOM.querySelector',
+        { nodeId: doc3.result.root.nodeId, selector: '#bMany' });
+      await send('DOM.setFileInputFiles', { files: fl, nodeId: q.result.nodeId });
+      for (let i = 0; i < 200; i++) {
+        await sleep(200);
+        if (await evalJS(until)) return true;
+        if (i === 5) await evalJS('document.getElementById("bMany")' +
+                                  '.dispatchEvent(new Event("change"))');
+      }
+      return false;
+    };
+    /* 三份同一星历：parseFile 有 PARSE_CACHE，不会重新解一遍 8 MB。 */
+    const ok3 = await pick([RNX, RNX, RNX], 'GNSS_VIEW.batch.many.length === 3');
+    chk('多选 3 份解析完成', ok3, await evalJS(nameEl + '.textContent'));
+    chk('超过 2 份时缩成「第一个 等 N 份」', await evalJS(
+      nameEl + '.textContent.endsWith(" 等 3 份")'), await evalJS(nameEl + '.textContent'));
+    chk('完整 3 个文件名挂在 title 上', await evalJS(
+      nameEl + '.title.split("\\n")[0] === GNSS_VIEW.batch.slots[GNSS_VIEW.batch.mode]' +
+      '.files.many[0].name &&' +
+      nameEl + '.title.includes("共 3 份，其中 3 份解析成功")'), await evalJS(nameEl + '.title'));
+
+    /* 掺一份非星历文件：它会解析失败，标签必须把失败数说出来，否则用户以为
+     * 跑的是 3 份，实际只有 2 份进了任务表。 */
+    await pick([RNX, RNX, CSV], 'GNSS_VIEW.batch.many.length === 3 && ' +
+      nameEl + '.textContent.includes("解析失败")');
+    chk('失败的那份不进任务表', await evalJS(
+      'GNSS_VIEW.batch.many.filter(m=>m.obj).length === 2 &&' +
+      'GNSS_VIEW.batch.many.filter(m=>m.err).length === 1'),
+      await evalJS(nameEl + '.textContent'));
+    chk('标签标明「1 份解析失败」', await evalJS(
+      nameEl + '.textContent.includes("（1 份解析失败）")'), await evalJS(nameEl + '.textContent'));
+    chk('失败时 title 里的成功份数如实为 2', await evalJS(
+      nameEl + '.title.includes("共 3 份，其中 2 份解析成功")'), await evalJS(nameEl + '.title'));
+
+    /* 还原成两份正常星历，别把上一节的状态留给后面的断言 */
+    await pick([RNX, RNX], 'GNSS_VIEW.batch.many.length === 2');
+    chk('重新选文件后回到「、」并排', await evalJS(
+      nameEl + '.textContent.split("、").length === 2 && ' +
+      '!' + nameEl + '.textContent.includes("解析失败")'), await evalJS(nameEl + '.textContent'));
+
+    /* 固定文件走同一条渲染路径：选错类型要说出失败原因，而不是停在「未解析」。
+     * （这条曾经真的挂住：解析前渲染了一次「未解析」，解析落定后没人补那一次。） */
+    const fixEl = 'document.getElementById("bFixedName")';
+    /* 同样的宽限期逻辑：先等原生 change，1.2 s 不来再补一个 */
+    const setF = async fl => {
+      const q = await send('DOM.querySelector',
+        { nodeId: doc3.result.root.nodeId, selector: '#bFixed' });
+      await send('DOM.setFileInputFiles', { files: fl, nodeId: q.result.nodeId });
+      await sleep(1400);
+      await evalJS('document.getElementById("bFixed").dispatchEvent(new Event("change"))');
+    };
+    await setF([RNX]);                       // 模式① 的固定文件要的是轨迹，塞一份星历进去
+    for (let i = 0; i < 100; i++) {
+      await sleep(200);
+      if (await evalJS(fixEl + '.textContent.includes("解析失败")')) break;
+    }
+    chk('固定文件解析失败时文件名说出原因', await evalJS(
+      fixEl + '.textContent.includes("解析失败：轨迹 CSV 缺少必需列")'),
+      await evalJS(fixEl + '.textContent'));
+    chk('固定文件失败时不进任务表、也不解锁开始', await evalJS(
+      '!GNSS_VIEW.batch.fixed && GNSS_VIEW.batch.tasks.length === 0 &&' +
+      'document.getElementById("bGo").disabled'));
+    await setF([CSV]);
+    for (let i = 0; i < 100; i++) {
+      await sleep(200);
+      if (await evalJS(fixEl + '.textContent.includes("行")')) break;
+    }
+    chk('改选正常文件后固定文件名恢复', await evalJS(
+      fixEl + '.textContent.includes("5000 行")'), await evalJS(fixEl + '.textContent'));
+    chk('恢复后任务表与开始按钮都回来了', await evalJS(
+      'GNSS_VIEW.batch.tasks.length === 2 && !document.getElementById("bGo").disabled'));
   }
 
   console.log('\n=== 批量任务：星座 全选 / 全不选 ===');
