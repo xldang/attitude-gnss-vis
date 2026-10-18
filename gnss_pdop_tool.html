@@ -461,7 +461,7 @@ Yaw 画的是轨迹 CSV 里的**原样罗盘方位角**。它跨 ±180° / 0° �
         </div>
 
         <div class="panel" id="bResPanel" style="display:none">
-          <h2>结果</h2>
+          <h2>结果 <span class="hint" id="bResMeta"></span></h2>
           <div class="btabs" id="bTabs">
             <button data-v="delta" class="on">对比曲线</button>
             <button data-v="trend">日期趋势</button>
@@ -2543,20 +2543,44 @@ Yaw 画的是轨迹 CSV 里的**原样罗盘方位角**。它跨 ±180° / 0° �
    * 复用 C.* 纯函数跑同一条流水线（parseRinex → buildLOSChunk → solveAll），
    * 所以批量与单任务的数值口径必然一致 —— 差别只在锚定时刻与统计口径。
    * ==========================================================================*/
+  /* 每个模式一份独立的现场（slot）：文件、解析结果、任务表、运行结果、基准选择。
+   * 切模式 = 换一个 slot，不动任何东西 —— 来回切分毫不丢。
+   * 早期版本只有一个全局现场，切模式时把 fixed/many/tasks/runs 一并清空，
+   * 理由是「解析结果的类型不再适用」，但代价是把用户刚配好的输入和跑出的结果
+   * 一起扔掉。真正该做的不是清空，而是让两种模式的现场各自活着。 */
+  function newSlot() {
+    return {
+      files: { fixed: null, many: [] },  // 原始 File，供标签回填与跨模式复用
+      fixed: null,                       // { name, kind, obj }
+      many: [],                          // [{ name, kind, obj, err }]
+      tasks: [],
+      runs: [],
+      baseline: 0
+    };
+  }
+
   const B = {
     mode: 1,
     mask: 15,
     sys: new Set(C.SYS_ORDER),
-    fixed: null,          // { name, kind:'rinex'|'trace', obj }
-    many: [],             // [{ name, kind, obj }]
-    runs: [],             // 跑完的结果
-    tasks: [],            // 预览出来的任务表
+    slots: { 1: newSlot(), 2: newSlot() },
     busy: false,
     stop: false,
     view: 'delta',
-    baseline: 0,
     delta: true          // 对比曲线的纵轴口径：true = Δ 基线，false = 绝对值
   };
+
+  /* B.fixed / B.many / B.tasks / B.runs / B.baseline 一律代理到当前 slot。
+   * 这样下面所有照旧写 B.tasks = []、B.runs.push(...) 的代码无需改动就自动落进
+   * 对应的 slot —— 代理是让「切模式保现场」这件事不散落到十几处赋值点上的关键。 */
+  for (const k of ['fixed', 'many', 'tasks', 'runs', 'baseline']) {
+    Object.defineProperty(B, k, {
+      get: () => B.slots[B.mode][k],
+      set: v => { B.slots[B.mode][k] = v; },
+      configurable: true
+    });
+  }
+  const slot = m => B.slots[m || B.mode];
 
   /* 批量专用色板。与单任务的星座色不同域，避免两处颜色含义混淆。 */
   const B_COLORS = ['#1d4ed8', '#b91c1c', '#047857', '#b45309', '#7c3aed', '#0891b2',
@@ -2590,15 +2614,49 @@ Yaw 画的是轨迹 CSV 里的**原样罗盘方位角**。它跨 ±180° / 0° �
     const accR = '.rnx,.RINEX,.txt,text/plain', accC = '.csv,text/csv';
     $('bFixed').accept = fixedKind() === 'rinex' ? accR : accC;
     $('bMany').accept = manyKind() === 'rinex' ? accR : accC;
-    // 换了模式，旧的解析结果类型不再适用，必须清掉而不是沿用
-    B.fixed = null; B.many = []; B.runs = []; B.tasks = [];
-    $('bFixedName').textContent = '未选择';
-    $('bManyName').textContent = '未选择';
-    $('bPrev').textContent = '尚未载入文件。';
-    $('bResPanel').style.display = 'none';
     syncHmsHint();
-    refreshGo();
+    resetFileInputs();      // 必须放在 accept 赋值之后，克隆才会带上新的 accept
+    restoreSlot();          // 换现场，不是清空现场
   }
+
+  /* input.files 不可程序化赋值，于是切模式后浏览器自带的「2 个文件」会停在另一个
+   * 模式那一份上，和我们自己写的标签当场打架 —— 用户看到「2 个文件」下一行写着
+   * 「1 份」。替换整个元素是唯一能程序化清空 file input 的办法。
+   *
+   * 必须 createElement 而**不能** cloneNode：实测 Chrome 的 cloneNode 会把
+   * FileList 一起带过去（克隆出来的元素 files.length 仍是 1），新建元素才真的是空的。 */
+  function resetFileInputs() {
+    for (const [id, fn] of [['bFixed', loadFixed], ['bMany', loadMany]]) {
+      const old = $(id);
+      const fresh = document.createElement('input');
+      fresh.type = 'file';
+      for (const a of Array.from(old.attributes)) fresh.setAttribute(a.name, a.value);
+      fresh.addEventListener('change', fn);
+      old.parentNode.replaceChild(fresh, old);
+    }
+  }
+
+  /* 把当前 slot 的现场回填到界面上。纯计算 + 已解析对象，不触发重新读盘。
+   * 注意 input.files 无法程序化赋值，所以文件名的权威来源是 slot.files，
+   * 标签按它回填；浏览器自带的文件名可能还停在另一个模式的那份，属预期。 */
+  function restoreSlot() {
+    const s = slot(), fs = s.files;
+    // 原生 input 被清空了（见 resetFileInputs），所以标签上补一句「已保留」，
+    // 否则「未选择任何文件」紧跟着「xxx.csv · 5000 行」会看着自相矛盾。
+    $('bFixedName').textContent = !fs.fixed ? '未选择'
+      : fs.fixed.name + (s.fixed ? ' · ' + sizeLabel(fixedKind(), s.fixed.obj) : ' · 未解析') + ' · 已保留';
+    const nF = fs.many.length, nOk = s.many.filter(m => m.obj).length;
+    $('bManyName').textContent = !nF ? '未选择'
+      : nF + ' 份' + (nOk < nF ? '（' + (nF - nOk) + ' 份解析失败）' : '') + ' · 已保留';
+    // 任务表按已解析对象重算一遍：纯函数，微秒级，但能保证起始时刻改动后两边都跟上
+    rebuildTasks();
+    // 结果面板：该模式跑过就恢复，没跑过就收起来
+    if (s.runs.length) { $('bResPanel').style.display = ''; renderResults(); }
+    else $('bResPanel').style.display = 'none';
+  }
+
+  const sizeLabel = (kind, obj) =>
+    kind === 'rinex' ? obj.sats.length + ' 颗星' : obj.n + ' 行';
 
   Array.from(document.getElementsByName('bmode')).forEach(r =>
     r.addEventListener('change', () => { if (r.checked) { B.mode = +r.value; syncMode(); } }));
@@ -2630,26 +2688,44 @@ Yaw 画的是轨迹 CSV 里的**原样罗盘方位角**。它跨 ±180° / 0° �
     return kind === 'rinex' ? C.parseRinex(txt) : C.parseTraceCSV(txt);
   }
 
-  function loadFixed() {
+  /* 解析缓存：同一份文件在两个模式里都可能被选中（例如既作为模式①批量里的星历，
+   * 又作为模式②的固定星历），按 (类型, 文件身份) 缓存可以只解析一次。
+   * 只缓存成功结果 —— 失败的文件应当允许重新挑选后再试。 */
+  const PARSE_CACHE = new Map();
+  const fileKey = (f, kind) => kind + '|' + f.name + '|' + f.size + '|' + f.lastModified;
+
+  function parseFile(f, kind) {
+    const k = fileKey(f, kind);
+    if (PARSE_CACHE.has(k)) return Promise.resolve(PARSE_CACHE.get(k));
+    return new Promise((res, rej) => {
+      const rd = new FileReader();
+      rd.onload = () => {
+        try {
+          const obj = parseAs(kind, rd.result, f.name);
+          if (kind === 'rinex' && !obj.sats.length) throw new Error('未解析到任何导航电文');
+          PARSE_CACHE.set(k, obj);
+          res(obj);
+        } catch (e) { rej(e); }
+      };
+      rd.onerror = () => rej(new Error('读取失败'));
+      rd.readAsText(f);
+    });
+  }
+
+  async function loadFixed() {
     const f = $('bFixed').files && $('bFixed').files[0];
     if (!f) return;
     const kind = fixedKind();
-    const rd = new FileReader();
-    rd.onload = () => {
-      try {
-        const obj = parseAs(kind, rd.result, f.name);
-        if (kind === 'rinex' && !obj.sats.length) throw new Error('未解析到任何导航电文');
-        B.fixed = { name: f.name, kind, obj };
-        $('bFixedName').textContent = f.name + (kind === 'rinex'
-          ? ' · ' + obj.sats.length + ' 颗星' : ' · ' + obj.n + ' 行');
-        buildTasks();
-      } catch (e) {
-        B.fixed = null;
-        $('bFixedName').textContent = f.name + ' · 解析失败：' + e.message;
-        buildTasks();
-      }
-    };
-    rd.readAsText(f);
+    slot().files.fixed = f;          // 先记下 File，解析失败也不至于把文件名丢了
+    try {
+      const obj = await parseFile(f, kind);
+      B.fixed = { name: f.name, kind, obj };
+      $('bFixedName').textContent = f.name + ' · ' + sizeLabel(kind, obj);
+    } catch (e) {
+      B.fixed = null;
+      $('bFixedName').textContent = f.name + ' · 解析失败：' + e.message;
+    }
+    rebuildTasks();
   }
 
   /* 批量解析必须**逐个 async** 且每个之间让出主线程：一份 8 MB 星历的定宽字段
@@ -2661,6 +2737,7 @@ Yaw 画的是轨迹 CSV 里的**原样罗盘方位角**。它跨 ±180° / 0° �
     const files = Array.from($('bMany').files || []);
     if (!files.length) return;
     const kind = manyKind();
+    slot().files.many = files;
     B.many = [];
     $('bManyName').textContent = '解析中 0/' + files.length + '…';
     let nOk = 0;
@@ -2668,16 +2745,8 @@ Yaw 画的是轨迹 CSV 里的**原样罗盘方位角**。它跨 ±180° / 0° �
       const f = files[i];
       $('bManyName').textContent = '解析中 ' + (i + 1) + '/' + files.length + '：' + cut(f.name, 28);
       await yieldUI();
-      const txt = await new Promise(res => {
-        const rd = new FileReader();
-        rd.onload = () => res(rd.result);
-        rd.onerror = () => res(null);
-        rd.readAsText(f);
-      });
-      if (txt == null) { B.many.push({ name: f.name, kind, obj: null, err: '读取失败' }); continue; }
       try {
-        const obj = parseAs(kind, txt, f.name);
-        if (kind === 'rinex' && !obj.sats.length) throw new Error('未解析到任何导航电文');
+        const obj = await parseFile(f, kind);
         B.many.push({ name: f.name, kind, obj });
         nOk++;
       } catch (e) {
@@ -2686,79 +2755,91 @@ Yaw 画的是轨迹 CSV 里的**原样罗盘方位角**。它跨 ±180° / 0° �
     }
     $('bManyName').textContent = files.length + ' 份' + (nOk < files.length
       ? '（' + (files.length - nOk) + ' 份解析失败）' : '');
-    buildTasks();
+    rebuildTasks();
   }
   $('bFixed').addEventListener('change', loadFixed);
   $('bMany').addEventListener('change', loadMany);
-  $('bHms').addEventListener('change', () => { if (B.fixed || B.many.length) buildTasks(); });
+  $('bHms').addEventListener('change', () => rebuildTasks());
 
   /* ---------- 任务表：把每个待跑任务解析成一条可预览的记录 ----------
    * 模式 1：每个星历文件一个任务，共用同一条轨迹。
-   * 模式 2：每条轨迹一个任务，共用同一份星历与同一个 t0。 */
-  function buildTasks() {
-    B.tasks = [];
+   * 模式 2：每条轨迹一个任务，共用同一份星历与同一个 t0。
+   *
+   * 起始时刻 #bHms 是**两个模式共用**的一个输入框，所以它一变，两个 slot 的
+   * 任务表都必须重算 —— 否则切回去会看到按旧时刻排的锚定日期。
+   * 只渲染当前模式的那一张。 */
+  function rebuildTasks() {
+    for (const m of [1, 2]) buildTasks(m);
+    renderPrev(B.mode);
+    refreshGo();
+  }
+
+  function buildTasks(m) {
+    const s = B.slots[m];
     const hms = $('bHms').value || '00:00:00';
-    const need = (B.fixed && B.many.length);
-    if (need) {
-      if (B.mode === 1) {
+    s.tasks = [];
+    if (s.fixed && s.many.length) {
+      if (m === 1) {
         // 固定轨迹，每份星历一个任务
-        const trace = B.fixed.obj, g = C.timeGrid(trace);
-        B.many.forEach(m => {
-          if (!m.obj) { B.tasks.push({ name: m.name, err: m.err, kind: 'rinex' }); return; }
-          const a = C.anchorFor(m.obj, hms);
-          if (!a) { B.tasks.push({ name: m.name, err: '锚定失败（时分秒非法或无电文）', kind: 'rinex' }); return; }
-          B.tasks.push({
-            name: m.name, kind: 'rinex', rinex: m.obj, trace,
+        const trace = s.fixed.obj, g = C.timeGrid(trace);
+        s.many.forEach(x => {
+          if (!x.obj) { s.tasks.push({ name: x.name, err: x.err, kind: 'rinex' }); return; }
+          const a = C.anchorFor(x.obj, hms);
+          if (!a) { s.tasks.push({ name: x.name, err: '锚定失败（时分秒非法或无电文）', kind: 'rinex' }); return; }
+          s.tasks.push({
+            name: x.name, kind: 'rinex', rinex: x.obj, trace,
             anchor: a, grid: g, t0Gps: a.t0,
             cover: C.coverState(a, g.first, g.last)
           });
         });
       } else {
         // 固定星历，每条轨迹一个任务，共用同一个 t0
-        const rinex = B.fixed.obj, a = C.anchorFor(rinex, hms);
-        B.many.forEach(m => {
-          if (!m.obj) { B.tasks.push({ name: m.name, err: m.err, kind: 'trace' }); return; }
-          const g = C.timeGrid(m.obj);
-          B.tasks.push({
-            name: m.name, kind: 'trace', rinex, trace: m.obj,
+        const rinex = s.fixed.obj, a = C.anchorFor(rinex, hms);
+        s.many.forEach(x => {
+          if (!x.obj) { s.tasks.push({ name: x.name, err: x.err, kind: 'trace' }); return; }
+          const g = C.timeGrid(x.obj);
+          s.tasks.push({
+            name: x.name, kind: 'trace', rinex, trace: x.obj,
             anchor: a, grid: g, t0Gps: a ? a.t0 : 0,
             cover: a ? C.coverState(a, g.first, g.last) : 'out'
           });
         });
       }
     }
-    renderPrev();
-    refreshGo();
   }
 
   function refreshGo() {
     const ok = B.fixed && B.many.length && B.sys.size && B.tasks.length && !B.busy;
     $('bGo').disabled = !ok;
+    /* 跑批期间锁死模式选择：B.runs / B.tasks 现在是代理到「当前 slot」的，
+     * 中途换模式会把正在写入的结果落到另一个模式的现场里去。 */
+    Array.from(document.getElementsByName('bmode')).forEach(r => { r.disabled = B.busy; });
   }
 
   /* ---------- 预览表 ---------- */
-  function renderPrev() {
+  function renderPrev(m) {
     const box = $('bPrev');
-    if (!B.fixed || !B.many.length) { box.textContent = '尚未载入完整输入。'; return; }
-    const okRuns = B.tasks.filter(t => !t.err);
+    const s = B.slots[m];
+    if (!s.fixed || !s.many.length) { box.textContent = '尚未载入文件。'; return; }
+    const okRuns = s.tasks.filter(t => !t.err);
     const bad = okRuns.filter(t => t.cover === 'out').length;
     const edge = okRuns.filter(t => t.cover === 'edge').length;
     const hms = $('bHms').value || '00:00:00';
 
     let html = '<table class="btab"><thead><tr>';
-    if (B.mode === 1) {
+    if (m === 1) {
       html += '<th>星历文件</th><th>锚定日期</th><th class="num">星数</th>' +
               '<th class="num">历元</th><th class="num">闰秒</th><th>覆盖</th></tr></thead><tbody>';
     } else {
       html += '<th>轨迹文件</th><th class="num">历元</th><th class="num">步长</th>' +
               '<th class="num">平均高度</th><th class="num">跨度</th><th>网格</th></tr></thead><tbody>';
     }
-    B.tasks.forEach((t, i) => {
+    s.tasks.forEach((t, i) => {
       if (t.err) {
         html += '<tr class="st-out"><td>' + esc(t.name) + '</td><td colspan="5" class="y">解析失败：' + esc(t.err) + '</td></tr>';
         return;
       }
-      if (B.mode === 1) {
+      if (m === 1) {
         const cls = t.cover === 'out' ? 'st-out' : t.cover === 'edge' ? 'st-edge' : '';
         const cv = t.cover === 'ok' ? '<span class="g">ok</span>'
                 : t.cover === 'edge' ? '<span class="y">edge</span>'
@@ -2770,7 +2851,7 @@ Yaw 画的是轨迹 CSV 里的**原样罗盘方位角**。它跨 ±180° / 0° �
                 '<td class="num">' + t.anchor.leap + '</td>' +
                 '<td>' + cv + '</td></tr>';
       } else {
-        const g = B.tasks[0].grid;
+        const g = s.tasks[0].grid;
         const same = i === 0 ? '（基准）' : (C.gridMatch(g, t.grid) ? '一致' : '<span class="y">不一致</span>');
         html += '<tr class="st-' + (t.cover === 'out' ? 'out' : t.cover === 'edge' ? 'edge' : 'base') + '">' +
                 '<td title="' + esc(t.name) + '">' + esc(t.name) + '</td>' +
@@ -2784,7 +2865,7 @@ Yaw 画的是轨迹 CSV 里的**原样罗盘方位角**。它跨 ±180° / 0° �
     html += '</tbody></table>';
 
     const notes = [];
-    if (B.mode === 1) {
+    if (m === 1) {
       const multi = okRuns.filter(t => t.anchor.multiDay);
       if (multi.length) {
         notes.push('<div class="bwarn">' + multi.length + ' 份星历的覆盖跨了多个 UTC 日，' +
@@ -2795,7 +2876,7 @@ Yaw 画的是轨迹 CSV 里的**原样罗盘方位角**。它跨 ±180° / 0° �
       if (edge) notes.push('<div class="bwarn">' + edge + ' 项覆盖判定为 edge —— ' +
         '尾部越过日界，部分历元会被标记星历过期，看汇总表里的过期率。</div>');
     } else {
-      const g0 = B.tasks.find(t => !t.err);
+      const g0 = s.tasks.find(t => !t.err);
       const mism = okRuns.filter(t => !C.gridMatch(g0.grid, t.grid));
       if (mism.length) {
         notes.push('<div class="bwarn">' + mism.length + ' 条轨迹的 Time 网格与基准不一致（首值/步长/长度）。' +
@@ -2827,6 +2908,7 @@ Yaw 画的是轨迹 CSV 里的**原样罗盘方位角**。它跨 ±180° / 0° �
     if (!todo.length) return;
     B.busy = true; B.stop = false; B.runs = [];
     $('bGo').disabled = true; $('bStop').disabled = false;
+    refreshGo();                             // 顺带把模式选择锁死
     const bar = $('bProg'), fill = bar.querySelector('i');
     bar.classList.add('on');
     const t0all = performance.now();
@@ -2885,6 +2967,7 @@ Yaw 画的是轨迹 CSV 里的**原样罗盘方位角**。它跨 ±180° / 0° �
         name: t.name, kind: t.kind, rinex: t.rinex, trace: t.trace,
         t0Gps: t.t0Gps, t0Utc: C.gpsSecToUTC(t.t0Gps, t.rinex.header.leap),
         grid: t.grid, nEp, nSat, nSel: idx.length,
+        mask: B.mask,               // 记下算这批时的掩角，供结果标题标注
         counts, pdops, upRow,
         stats: C.runStats(counts, pdops, nEp, drop),
         cover: t.cover, ms: performance.now() - tms
@@ -2911,6 +2994,12 @@ Yaw 画的是轨迹 CSV 里的**原样罗盘方位角**。它跨 ±180° / 0° �
     const base = Math.max(0, Math.min(B.baseline, B.runs.length - 1));
     B.baseline = base;
     const view = $('bView');
+    /* 掩角与起始时刻是两个模式**共用**的控件，结果却是各自 slot 的。
+     * 所以把跑这批结果时的条件写在标题上：改了掩角再切回来，一眼能看出该重跑。 */
+    $('bResMeta').textContent = '· 模式 ' + (B.mode === 1 ? '①' : '②') +
+      ' · 掩角 ' + B.runs[0].mask.toFixed(1) + '°' +
+      ' · 起始 ' + ($('bHms').value || '00:00:00') +
+      ' · ' + B.runs.length + ' 项';
     $('bLegend').textContent = '';
     $('bNote').textContent = '';
     // bScale 不是 tab，但要和 tab 一起刷新高亮态（切 tab 时上面的 forEach 会清掉它）
@@ -3204,8 +3293,7 @@ Yaw 画的是轨迹 CSV 里的**原样罗盘方位角**。它跨 ±180° / 0° �
     $('bMaskv').textContent = B.mask.toFixed(1) + '°';
     buildChips();
     $('batch').classList.add('on');
-    syncHmsHint();                           // 首次打开也要把提示语摆正（不能调 syncMode，它会清空已载入的文件）
-    if (B.fixed || B.many.length) buildTasks();
+    syncMode();                              // 首次打开 / 再次打开都把当前 slot 的现场回填（已不再清空）
     window.scrollTo(0, 0);
   });
   $('bClose').addEventListener('click', () => { $('batch').classList.remove('on'); });

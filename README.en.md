@@ -59,7 +59,7 @@ attitude-gnss-vis/
 │  └─ ref_pdop.py           Independent Python implementation (numerical baseline for the JS)
 ├─ test/
 │  ├─ test_core.js          Node core regression: JS vs Python, epoch by epoch
-│  ├─ e2e_browser.js        Browser end-to-end: drives real Chrome over CDP, 138 assertions
+│  ├─ e2e_browser.js        Browser end-to-end: drives real Chrome over CDP, 168 assertions
 │  ├─ fixtures/
 │  │  ├─ train_set.csv      Real receiver measurements (regression fixture)
 │  │  └─ sky-ref/           Measured sky-plot screenshots, one per epoch of train_set.csv
@@ -124,6 +124,16 @@ mean satellites in both.
 |---|---|---|---|
 | ① | Trajectory CSV | several ephemeris files | day-to-day ephemeris variation |
 | ② | Ephemeris RINEX | several trajectory CSVs | flight-path / attitude variation |
+
+**Each mode keeps its own workspace, and switching loses nothing.** Switching modes just
+swaps slots: file selections, parsed results, the preview table, the plotted curves and the
+baseline choice all stay where they are and come back bit-identical — you don't even have to
+re-pick the files. The mask angle and start instant are *shared* controls, so the results
+panel stamps which mode, mask and start instant produced the curves you are looking at; change
+a parameter, switch back, and it is obvious whether a re-run is due.
+
+(Mode selection is locked while a batch is running — otherwise in-flight results would be
+written into the other mode's workspace.)
 
 ### How the start instant is anchored
 

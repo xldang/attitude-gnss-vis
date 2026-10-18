@@ -1232,6 +1232,148 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     }
   }
 
+  console.log('\n=== 批量任务：切模式保留工作区现场 ===');
+  {
+    /* 用户报的原问题：切模式时工作区里的输入和跑出的结果被一并清空。
+     * 早期版本的 syncMode 无条件把 fixed/many/tasks/runs 清零。现在每个模式一份
+     * 独立现场，切模式只换 slot。断言必须覆盖「切走再切回，结果逐位相同」，
+     * 否则一个只恢复文件、结果照样丢掉的半吊子实现也能蒙混过关。 */
+    const snap = async () => await evalJS('(()=>{const s=GNSS_VIEW.batch.slots;' +
+      'const f=s[1];return {' +
+      'fixed:f.fixed&&f.fixed.name, nMany:f.many.length, nFixedFiles:f.files.fixed?1:0,' +
+      'nManyFiles:f.files.many.length, nTasks:f.tasks.length, nRuns:f.runs.length,' +
+      'means:f.runs.map(r=>+r.stats.mean.toFixed(6)),' +
+      'mask:f.runs[0]&&f.runs[0].mask, m2Runs:s[2].runs.length}})()');
+    const before = await snap();
+    chk('切走前模式① 的现场有内容', before.nRuns > 0 && before.nTasks > 0, JSON.stringify(before).slice(0, 70));
+
+    // 先切到模式② 再切回：多绕一跳，确保不是「第一次同步时顺手填的」
+    await evalJS('document.querySelector(\'input[name="bmode"][value="1"]\').click()');
+    await sleep(300);
+    const at1 = await snap();
+    chk('切到模式② 后模式① 的现场仍在内存中', at1.nRuns === before.nRuns && at1.nTasks === before.nTasks);
+
+    await evalJS('document.querySelector(\'input[name="bmode"][value="2"]\').click()');
+    await sleep(300);
+    const at2 = await snap();
+    chk('切到模式② 后模式② 现场完好', at2.m2Runs > 0, at2.m2Runs + ' 项');
+
+    await evalJS('document.querySelector(\'input[name="bmode"][value="1"]\').click()');
+    await sleep(300);
+    const back = await snap();
+    chk('切回模式① 后文件选择原样恢复',
+        back.fixed === before.fixed && back.nMany === before.nMany &&
+        back.nFixedFiles === before.nFixedFiles && back.nManyFiles === before.nManyFiles,
+        back.fixed + ' / ' + back.nMany);
+    chk('切回模式① 后任务表原样恢复', back.nTasks === before.nTasks, back.nTasks + '');
+    chk('切回模式① 后仿真结果原样恢复', back.nRuns === before.nRuns, back.nRuns + '');
+    chk('切回模式① 后每项结果逐位相同',
+        JSON.stringify(back.means) === JSON.stringify(before.means),
+        back.means.join(',') + ' vs ' + before.means.join(','));
+    chk('切回模式① 后结果面板重新显示', await evalJS(
+      'document.getElementById("bResPanel").style.display !== "none"'));
+    /* input.files 无法程序化赋值：若不清空，浏览器自带的「2 个文件」会停在另一个
+     * 模式那一份上，与我们自己写的标签「1 份」当场矛盾。克隆替换是唯一解法。 */
+    chk('切模式后浏览器自带的文件名不留上一模式的残留',
+        await evalJS('document.getElementById("bFixed").files.length===0 &&' +
+                     'document.getElementById("bMany").files.length===0'));
+    chk('切模式后 file input 的 accept 已随模式更新', await evalJS(
+      'document.getElementById("bFixed").accept.indexOf(".csv")>=0 &&' +
+      'document.getElementById("bMany").accept.indexOf(".rnx")>=0'),
+      await evalJS('document.getElementById("bFixed").accept + " | " + document.getElementById("bMany").accept'));
+    chk('清空原生 input 后仍能重新选文件', await evalJS(
+      '(()=>{document.getElementById("bMany").dispatchEvent(new Event("change"));return true})()'));
+    chk('切回模式① 后预览表重新渲染', await evalJS(
+      'document.getElementById("bPrev").querySelectorAll("table.btab tr").length > 1'));
+    chk('固定文件标签按模式① 回填为轨迹', await evalJS(
+      'document.getElementById("bFixedName").textContent.includes("flight_shanghai_xian")'),
+      await evalJS('document.getElementById("bFixedName").textContent'));
+    chk('原生 input 已清空时标签注明「已保留」', await evalJS(
+      'document.getElementById("bFixedName").textContent.includes("已保留") &&' +
+      'document.getElementById("bManyName").textContent.includes("已保留")'),
+      await evalJS('document.getElementById("bFixedName").textContent + " / " + document.getElementById("bManyName").textContent'));
+    chk('结果标题标注了跑这批时的掩角', await evalJS(
+      'document.getElementById("bResMeta").textContent.includes("掩角 " + GNSS_VIEW.batch.slots[1].runs[0].mask.toFixed(1))'),
+      await evalJS('document.getElementById("bResMeta").textContent'));
+    chk('结果标题标注了当前模式', await evalJS(
+      'document.getElementById("bResMeta").textContent.includes("模式 ①")'));
+
+    /* 两个 slot 必须真的各自独立。注意**不能**断言两边的均值不同：这套 fixture
+     * 两个模式用的是同一份星历和同一条轨迹，均值本就应当相同，断言它不同是错的。
+     * 该断言的是容器互为不同对象，且代理写入只落到当前 slot。 */
+    const indep = await evalJS('(()=>{const s=GNSS_VIEW.batch.slots;' +
+      'return {runs:s[1].runs!==s[2].runs, tasks:s[1].tasks!==s[2].tasks,' +
+      'fixed:s[1].fixed!==s[2].fixed, many:s[1].many!==s[2].many,' +
+      'files:s[1].files!==s[2].files}})()');
+    chk('两个 slot 的容器互为不同对象',
+        indep.runs && indep.tasks && indep.many && indep.files, JSON.stringify(indep));
+    chk('两个 slot 的固定文件各不相干', indep.fixed);
+    /* baseline 是数字，不能比身份，得比「写了会不会串」 */
+    const bsw = await evalJS('(()=>{const B=GNSS_VIEW.batch,s=B.slots;' +
+      'const o=[s[1].baseline,s[2].baseline];B.mode=1;B.baseline=1;' +
+      'const after=[s[1].baseline,s[2].baseline];B.baseline=o[0];return {o,after}})()');
+    chk('代理写入只落到当前 slot',
+        bsw.after[0] === 1 && bsw.after[1] === bsw.o[1], JSON.stringify(bsw));
+    const mut = await evalJS('(()=>{const B=GNSS_VIEW.batch,s=B.slots;' +
+      'const n0=[s[1].runs.length,s[2].runs.length];' +
+      'B.mode=1;B.runs.push({name:"probe"});const after=[s[1].runs.length,s[2].runs.length];' +
+      'B.runs.pop();' +
+      'return {n0,after,restored:s[1].runs.length===n0[0]&&s[2].runs.length===n0[1]}})()');
+    chk('runs 的代理写入只落在模式① 上',
+        mut.after[0] === mut.n0[0] + 1 && mut.after[1] === mut.n0[1] && mut.restored,
+        JSON.stringify(mut));
+    chk('模式① 的每项都是星历任务', await evalJS(
+      'GNSS_VIEW.batch.slots[1].runs.every(r=>r.kind==="rinex")'));
+    chk('模式② 的每项都是轨迹任务', await evalJS(
+      'GNSS_VIEW.batch.slots[2].runs.every(r=>r.kind==="trace")'));
+
+    // 参数在切换中保持
+    await evalJS('(()=>{const m=document.getElementById("bMask");m.value=23;m.dispatchEvent(new Event("input",{bubbles:true}))})()');
+    await evalJS('document.querySelector(\'input[name="bmode"][value="2"]\').click()');
+    await sleep(250);
+    await evalJS('document.querySelector(\'input[name="bmode"][value="1"]\').click()');
+    await sleep(250);
+    chk('切模式不改变掩角设置', await evalJS('GNSS_VIEW.batch.mask') === 23);
+    chk('切模式不改变结果面板的掩角标注', await evalJS(
+      'document.getElementById("bResMeta").textContent.includes("掩角 0.0°")'),
+      await evalJS('document.getElementById("bResMeta").textContent'));
+    await evalJS('(()=>{const m=document.getElementById("bMask");m.value=0;m.dispatchEvent(new Event("input",{bubbles:true}))})()');
+
+    // 起始时刻是共用控件：改了它两个 slot 的锚定都要跟上
+    await evalJS('(()=>{const h=document.getElementById("bHms");h.value="06:30:00";h.dispatchEvent(new Event("change",{bubbles:true}))})()');
+    await sleep(250);
+    const t0 = await evalJS('(()=>{const s=GNSS_VIEW.batch.slots;' +
+      'return [s[1].tasks[0]&&s[1].tasks[0].t0Gps, s[2].tasks[0]&&s[2].tasks[0].t0Gps]})()');
+    chk('改起始时刻后模式① 的锚点同步更新', t0[0] !== null && t0[0] !== undefined &&
+        String(t0[0]).slice(-5).replace(/\..*$/, '') !== '', String(t0[0]));
+    chk('改起始时刻后模式② 的锚点同步更新', t0[1] !== null && t0[1] !== undefined);
+    await evalJS('(()=>{const h=document.getElementById("bHms");h.value="00:00:00";h.dispatchEvent(new Event("change",{bubbles:true}))})()');
+    await sleep(250);
+
+    /* input.files 无法程序化赋值，切模式后浏览器自带的文件名仍停在另一模式那份。
+     * 所以「切回来直接重跑，不重新选文件」必须成立 —— 否则用户会以为自己没选对。 */
+    chk('切回后无需重选文件即可直接重跑', await evalJS(
+      '!document.getElementById("bGo").disabled'));
+    await evalJS('document.getElementById("bGo").click()');
+    await sleep(150);
+    /* 跑批期间换模式会把正在写入的结果落到另一个 slot，所以此时必须锁死 */
+    const lockedDuring = await evalJS(
+      'Array.from(document.getElementsByName("bmode")).every(r=>r.disabled)');
+    let sawLock = lockedDuring;
+    for (let i = 0; i < 400; i++) {
+      await sleep(250);
+      if (!(await evalJS('document.getElementById("bProg").classList.contains("on")'))) break;
+      if (!sawLock) sawLock = await evalJS(
+        'Array.from(document.getElementsByName("bmode")).every(r=>r.disabled)');
+    }
+    chk('跑批期间模式选择被锁死', sawLock);
+    chk('跑完后模式选择恢复可用', await evalJS(
+      'Array.from(document.getElementsByName("bmode")).every(r=>!r.disabled)'));
+    const rerun = await evalJS('GNSS_VIEW.batch.runs.map(r=>+r.stats.mean.toFixed(6))');
+    chk('不重选文件重跑得到同一批结果',
+        JSON.stringify(rerun) === JSON.stringify(back.means), rerun.join(','));
+  }
+
   console.log('\n=== 批量任务：单任务界面未被污染 ===');
   {
     chk('单任务状态仍完好', await evalJS(
