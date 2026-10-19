@@ -30,6 +30,32 @@ const SPACE_TRACE = path.join(ROOT, 'test', 'fixtures', 'trace_space.dat');
 const DL = path.join(BUILD, 'e2e_download');
 const PORT = 9333;
 
+/* 导出列契约：标准 7 列 + 3 个几何产出物 + 5 个精度产出物 = 15 列。
+ * 下面有 5 处断言要逐字比对同一行表头（单任务导出、批量 ZIP 成员、
+ * 空格分隔源文件……），复制 5 遍的话以后加列改漏一处，测试反而会给出
+ * 误导性的「通过」—— 比断言缺失更糟。 */
+const EXPORT_HEAD =
+  'Time,Longitude,Latitude,Height,Yaw,Pitch,Roll,Visible_Count,PDOP,PRN_label,' +
+  'PosAccH_m,PosAccV_m,VelAccE_mps,VelAccN_mps,VelAccD_mps';
+const EXPORT_COLS = 15;
+
+/* CSV 单行拆字段。**不能**用 split(',')：PRN_label 形如 "G05,G11,..." 里面
+ * 自带逗号，split 会把它炸成一堆碎片，于是「第 10 个字段」根本不是 PRN，
+ * 后面的 5 个精度列也全部错位。这是本文件里最容易写出静默假通过的地方 ——
+ * 断言照样在跑，只是拿错误的数据在比，而且往往表现为"全部不符"这种
+ * 看着很真、其实是自己解析错了一类的失败。 */
+const csvRow = line => {
+  const out = []; let cur = '', q = false;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (c === '"') { if (q && line[i + 1] === '"') { cur += '"'; i++; } else q = !q; }
+    else if (c === ',' && !q) { out.push(cur); cur = ''; }
+    else cur += c;
+  }
+  out.push(cur);
+  return out;
+};
+
 fs.rmSync(DL, { recursive: true, force: true });
 fs.mkdirSync(DL, { recursive: true });
 fs.mkdirSync(BUILD, { recursive: true });
@@ -136,6 +162,57 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
       await evalJS('[...document.querySelectorAll("#syslist input")].map(x=>x.dataset.sys).join("")'));
 
   const AVGE = 'GNSS_VIEW.state';
+
+  /* ---------- 精度面板 ----------
+   * 只断言"有文字"没用：格式化函数写错（NaN / undefined / 逗号分位）照样出字。
+   * 逐格验形状与量级，并且要求 5% ≤ 中位 ≤ 95% 这条分位数序关系成立。 */
+  {
+    const panel = await evalJS(`(()=>{const o={};
+      for (const [id,k] of [['aSh','sh'],['aSv','sv'],['aSe','sve'],['aSn','svn'],['aSu','svu']]) {
+        const g = s => document.getElementById(id+s).textContent;
+        o[k] = {cur:g(''), med:g('M'), lo:g('L'), hi:g('H')};
+      } return o})()`);
+    const num = s => /^-?\d+(\.\d+)?$/.test(s) ? Number(s) : NaN;
+    const shape = Object.entries(panel).every(([, v]) =>
+      ['cur', 'med', 'lo', 'hi'].every(f => Number.isFinite(num(v[f]))));
+    chk('精度面板 20 格全是数值（无 NaN / undefined / 占位符）', shape, JSON.stringify(panel));
+    const ord = Object.entries(panel).every(([, v]) => {
+      const [lo, m, hi] = [num(v.lo), num(v.med), num(v.hi)];
+      return lo <= m && m <= hi;
+    });
+    chk('5% ≤ 中位 ≤ 95%（分位数顺序自洽）', ord,
+        Object.entries(panel).map(([k, v]) => k + ' ' + v.lo + '/' + v.med + '/' + v.hi).join('  '));
+    chk('位置 σ_h/σ_v ∈ [0.5, 10] m', num(panel.sh.med) > 0.5 && num(panel.sh.med) < 10 &&
+        num(panel.sv.med) > 0.5 && num(panel.sv.med) < 10,
+        panel.sh.med + ' / ' + panel.sv.med + ' m');
+    chk('测速 σ_ve/vn/vu ∈ [0.01, 0.5] m/s',
+        [panel.sve, panel.svn, panel.svu].every(v => num(v.med) > 0.01 && num(v.med) < 0.5),
+        panel.sve.med + ' / ' + panel.svn.med + ' / ' + panel.svu.med + ' m/s');
+    chk('面板上 σ_vu < σ_ve（测速解无钟差未知量）', num(panel.svu.med) < num(panel.sve.med),
+        panel.svu.med + ' < ' + panel.sve.med);
+    chk('MC 列未抽样前为占位符', (await evalJS('document.getElementById("aShC").textContent')) === '—');
+
+    /* 按一次 MC，看交叉验证值是否落在确定性 σ 的 15% 以内 */
+    await evalJS('document.getElementById("bMc").click()');
+    let mcDone = false;
+    for (let i = 0; i < 60 && !mcDone; i++) {
+      await sleep(250);
+      mcDone = await evalJS('document.getElementById("aShC").textContent !== "—"');
+    }
+    chk('MC 抽样跑完并回填 5 列', mcDone,
+        await evalJS('document.getElementById("aShC").textContent') + ' | errs: ' + errs.slice(0, 2).join(' ; '));
+    if (mcDone) {
+      const mc = await evalJS(`(()=>{const o={};
+        for (const [id,k] of [['aSh','sh'],['aSv','sv'],['aSe','sve'],['aSn','svn'],['aSu','svu']])
+          o[k]=document.getElementById(id+'C').textContent; return o})()`);
+      const rel = Object.keys(mc).map(k => Math.abs(Number(mc[k]) - num(panel[k].med)) / num(panel[k].med));
+      chk('MC 与确定性 σ 全部吻合（< 15%）', Math.max(...rel) < 0.15,
+          Object.keys(mc).map(k => k + ' ' + mc[k] + ' vs ' + panel[k].med).join('  ') +
+          '  最大偏差 ' + (Math.max(...rel) * 100).toFixed(1) + '%');
+      chk('抽样期间无 JS 异常', errs.length === 0, errs.slice(0, 3).join(' | '));
+    }
+  }
+
   const stats = `(()=>{const c=${AVGE}.counts, p=${AVGE}.pdops.filter(Number.isFinite);` +
     `return {n:${AVGE}.trace.n, np:p.length,` +
     `avg:+(c.reduce((a,b)=>a+b,0)/c.length).toFixed(3),` +
@@ -143,8 +220,8 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   const st = await evalJS(stats);
   console.log('  页面状态: 历元 ' + st.n + '，有效 PDOP ' + st.np +
               '，平均星数 ' + st.avg + '，平均 PDOP ' + st.pavg);
-  chk('平均星数 = Python 基准 53.413', Math.abs(st.avg - 53.413) < 0.05, '' + st.avg);
-  chk('平均 PDOP = Python 基准 0.6224', Math.abs(st.pavg - 0.6224) < 0.002, '' + st.pavg);
+  chk('平均星数 = 基准 53.413', Math.abs(st.avg - 53.413) < 0.05, '' + st.avg);
+  chk('平均 PDOP = 基准 0.3915', Math.abs(st.pavg - 0.3915) < 0.002, '' + st.pavg);
 
   /* ---------- 列名映射：中文表头 / 乱序 / 多余列 ----------
    * 前面那轮跑的是规范列名的样本，结果对得上基准。这里换成一份列名全中文、
@@ -194,7 +271,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     }
     const st2 = await evalJS(stats);
     chk('换列名后平均星数不变（53.413）', Math.abs(st2.avg - 53.413) < 0.05, '' + st2.avg);
-    chk('换列名后平均 PDOP 不变（0.6224）', Math.abs(st2.pavg - 0.6224) < 0.002, '' + st2.pavg);
+    chk('换列名后平均 PDOP 不变（0.3915）', Math.abs(st2.pavg - 0.3915) < 0.002, '' + st2.pavg);
     chk('全程无 JS 异常', errs.length === 0, errs.slice(0, 3).join(' | '));
 
     /* 换回规范列名的样本，后续用例的前提就恢复了 */
@@ -282,12 +359,21 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     s[1].toFixed(2) + '  平均 PDOP ' + s[2].toFixed(4) + '  重算 ' + s[3].toFixed(1) + ' ms'));
   chk('7 档全部重算 < 200 ms（拖动秒级响应）', sweep.every(s => s[3] < 200),
       sweep.map(s => s[3].toFixed(0)).join('/') + ' ms');
-  const scanExp = [[0, 66.640, 0.4251], [5, 62.916, 0.4648], [10, 57.845, 0.5363],
-                   [15, 53.413, 0.6224], [20, 48.602, 0.7610], [30, 39.222, 1.1709],
-                   [45, 23.151, 2.6840]];
+  /* 基准来自 reference/ref_pdop.py（Python 独立实现）与 test/tools/dop_ref.js
+   * （JS 侧 Schur 补 3×3，不经过被测的 matInv4 / pdopFromQ）—— 三条路径逐位一致。
+   * pdopFromQ 修过两次，这两组数都作废、不能混用：
+   *   0.6224 / 1.8805 / …  含了钟差方差又漏 q_zz（比正确值大约 1.62~1.75 倍）
+   *   0.3844 / 1.1847 / …  对角元对了，但取的是**机体系** x/y，等于假设天线
+   *                        面板始终水平；PDOP 按定义是当地 ENU 水平量。
+   *                        修好后均值 0.3915、峰值 1.2826 —— 峰值抬升远多于均值，
+   *                        因为轨迹里 roll 大的那些历元，机体系的"水平"混进了
+   *                        大量垂向分量。 */
+  const scanExp = [[0, 66.640, 0.3180], [5, 62.916, 0.3339], [10, 57.845, 0.3622],
+                   [15, 53.413, 0.3915], [20, 48.602, 0.4327], [30, 39.222, 0.5305],
+                   [45, 23.151, 1.0134]];
   const bad = sweep.filter((s, i) =>
     Math.abs(s[1] - scanExp[i][1]) > 0.05 || Math.abs(s[2] - scanExp[i][2]) > 0.002);
-  chk('7 档掩角的星数/PDOP 全与 Python 基准一致', bad.length === 0,
+  chk('7 档掩角的星数/PDOP 全与独立基准一致', bad.length === 0,
       bad.length ? JSON.stringify(bad) : sweep.map(s => s[1] + '星/' + s[2]).join(' '));
 
   console.log('\n=== 分星座独立仿真（掩角回到 15°）===');
@@ -302,9 +388,9 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   const gps = await pick(['G']), bds = await pick(['C']), gb = await pick(['G', 'C']);
   const cmp = (nm, r, en, ep) => chk(nm, Math.abs(r.avg - en) < 0.05 && Math.abs(r.pavg - ep) < 0.002,
     '平均星数 ' + r.avg + '，平均 PDOP ' + r.pavg + '（基准 ' + en + ' / ' + ep + '）');
-  cmp('仅 GPS 独立仿真', gps, 7.347, 1.8805);
-  cmp('仅北斗独立仿真', bds, 16.564, 1.2263);
-  cmp('GPS + 北斗', gb, 23.911, 0.9594);
+  cmp('仅 GPS 独立仿真', gps, 7.347, 1.1807);
+  cmp('仅北斗独立仿真', bds, 16.564, 0.7405);
+  cmp('GPS + 北斗', gb, 23.911, 0.5866);
   chk('星座切换期间无 JS 异常', errs.length === 0, errs.slice(0, 3).join(' | '));
 
   console.log('\n=== 页面内自检面板 ===');
@@ -1176,32 +1262,64 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     chk('UTF-8 BOM（Excel 友好）', buf[0] === 0xEF && buf[1] === 0xBB && buf[2] === 0xBF);
     /* 规范化：列只由映射决定，与源文件的列名/列序/列数无关。
      * 样本有 10 列（含 Time,Longitude,Latitude,Height,Yaw,Pitch,Roll 之外的
-     * Nstats/PDOP/v_spare），导出必须只剩标准 7 列 + 3 个产出物。 */
-    chk('表头 = 标准 7 列 + 3 个产出物（与源文件 10 列无关）',
-        lines[0] === 'Time,Longitude,Latitude,Height,Yaw,Pitch,Roll,Visible_Count,PDOP,PRN_label',
-        lines[0]);
+     * Nstats/PDOP/v_spare），导出必须只剩标准 7 列 + 8 个产出物。 */
+    chk('表头 = 标准 7 列 + 8 个产出物（与源文件 10 列无关）',
+        lines[0] === EXPORT_HEAD, lines[0]);
     chk('源文件的多余列不进导出',
         lines.join('\n').indexOf('GroundSpeed') < 0 && lines.join('\n').indexOf('Airspeed') < 0 &&
         lines.join('\n').indexOf('TrackAngle') < 0,
         '源表头 ' + traceHead);
-    chk('每行都是 10 列',
-        lines.every(l => csvCols(l) === 10), '首行 ' + csvCols(lines[1]) + ' 列');
-    // PRN_label 内含逗号，必须加引号；否则解析器会把一行拆成多列
-    chk('PRN_label 列带引号且首行非空',
-        /"\{[A-Z]\d\d(,[A-Z]\d\d)*\}"$/.test(lines[1]),
-        lines[1].slice(-70));
+    chk('每行都是 ' + EXPORT_COLS + ' 列',
+        lines.every(l => csvCols(l) === EXPORT_COLS), '首行 ' + csvCols(lines[1]) + ' 列');
+    /* PRN_label 内含逗号，必须加引号；否则解析器会把一行拆成多列。
+     * 它后面还跟着 5 个精度列，所以不能再用 `$` 锚定行尾。 */
+    chk('PRN_label 列带引号且非空',
+        /"\{[A-Z]\d\d(,[A-Z]\d\d)*\}",\d/.test(lines[1]),
+        lines[1].slice(-90));
     /* PRN_label 的个数必须与 Visible_Count 对得上：导出里这是唯一一处
-     * 「同一事实说了两遍」的地方，两遍不一致就是真的错了。 */
+     * 「同一事实说了两遍」的地方，两遍不一致就是真的错了。
+     * 注意只能取第 10 个字段 —— 后面 5 个精度列里没有逗号，切到行尾会把
+     * PRN 与 PosAccH 混起来数，结论恒为「不符」。 */
     let mism = 0, mrow = '';
     for (const l of lines.slice(1)) {
-      const c = l.split(',');
-      const n = c.slice(9).join(',').replace(/"/g, '').replace(/^\{|\}$/g, '');
+      const c = csvRow(l);
+      const n = c[9].replace(/^\{|\}$/g, '');
       if ((n ? n.split(',').length : 0) !== Number(c[7])) { mism++; if (!mrow) mrow = l.slice(0, 60); }
     }
     chk('PRN_label 的个数 == Visible_Count（全部 5000 行）', mism === 0, mism + ' 行不符：' + mrow);
+    /* 5 个精度列必须是可解历元的**有限正数**，不可解历元留空。
+     * 只断言"列存在"没用 —— 全空列也能通过列数检查。这里同时验：
+     * 与 Visible_Count 对齐（<4 颗星必空）、量级在单频多模接收机的范围内。 */
+    {
+      let filled = 0, badSig = 0, badAlign = 0, sig = [];
+      for (const l of lines.slice(1)) {
+        const all = csvRow(l);
+        const c = all.slice(10);
+        if (c.length !== 5) { badSig++; continue; }
+        const v = c.map(Number);
+        if (v.every(x => x === 0)) {                       // 整行全空 = 该历元不可解
+          if (Number(all[7]) >= 4) badAlign++;
+          continue;
+        }
+        if (!v.every(x => Number.isFinite(x) && x > 0)) { badSig++; continue; }
+        filled++;
+        sig.push(v);
+      }
+      const avg = j => sig.reduce((a, v) => a + v[j], 0) / sig.length;
+      chk('5 个精度列在可解历元上全是有限正数', badSig === 0, badSig + ' 行异常');
+      chk('留空 ⟺ 可视星 < 4', badAlign === 0, badAlign + ' 行有星却全空');
+      chk('可解历元数 > 99%', filled > lines.length * 0.99, filled + '/' + (lines.length - 1));
+      chk('σ_h ∈ [0.5, 10] m（单频多模量级护栏）', avg(0) > 0.5 && avg(0) < 10, avg(0).toFixed(3) + ' m');
+      chk('σ_v > σ_h（位置解含钟差未知量）', avg(1) > avg(0), avg(1).toFixed(3) + ' > ' + avg(0).toFixed(3));
+      chk('σ_ve/vn/vu ∈ [0.01, 0.5] m/s（多普勒量级护栏）',
+          [2, 3, 4].every(j => avg(j) > 0.01 && avg(j) < 0.5),
+          [2, 3, 4].map(j => avg(j).toFixed(4)).join(' / '));
+      console.log('  σ 均值 m: ' + avg(0).toFixed(3) + ' / ' + avg(1).toFixed(3) +
+                  ' · m/s: ' + [2, 3, 4].map(j => avg(j).toFixed(4)).join(' / '));
+    }
     chk('行数 = 5000 数据行', lines.length === 5001,
         (lines.length - 1) + ' 行，' + (buf.length / 1024).toFixed(0) + ' KB');
-    EXPORT_ROW0 = lines[1].split(',').slice(0, 9);   // 前 9 个裸字段（Time…PDOP）
+    EXPORT_ROW0 = csvRow(lines[1]).slice(0, 9);      // 前 9 个裸字段（Time…PDOP）
     fs.copyFileSync(got, path.join(BUILD, 'e2e_export.csv'));
     console.log('  已另存 build/e2e_export.csv 供 Python 独立逐历元核对');
   }
@@ -1556,10 +1674,10 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
           /* 每个任务的 CSV 与单任务导出**同一种形状**：标准 7 列 + 3 个产出物。
            * 文件名已经带着 A_on_B_mask<掩角>，任务名/固定文件名/起始时刻在一份
            * 文件内全是常量，所以不再占列。 */
-          chk('成员表头 = 标准 7 列 + 3 个产出物（与单任务导出同一形状）',
-              L[0] === 'Time,Longitude,Latitude,Height,Yaw,Pitch,Roll,Visible_Count,PDOP,PRN_label',
-              L[0]);
-          chk('成员每行 10 列', L.slice(1, 50).every(l => csvCols(l) === 10), L[1].slice(0, 60));
+          chk('成员表头 = 标准 7 列 + 8 个产出物（与单任务导出同一形状）',
+              L[0] === EXPORT_HEAD, L[0]);
+          chk('成员每行 ' + EXPORT_COLS + ' 列',
+              L.slice(1, 50).every(l => csvCols(l) === EXPORT_COLS), L[1].slice(0, 60));
           /* 交叉比对：批量成员与单任务导出喂的是**同一个轨迹文件**，所以前 7 列
            * 必须逐位相同（只认映射后的标准列，两条路取到的就该是同一批数）。
            * Visible_Count 则必然 >= —— 批量这批跑的是 0° 掩角，可见星只会更多。 */
@@ -1574,8 +1692,8 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
           }
           chk('成员内 PRN_label 的个数 == Visible_Count',
               L.slice(1, 200).every(l => {
-                const c = l.split(',');
-                const n = c.slice(9).join(',').replace(/"/g, '').replace(/^\{|\}$/g, '');
+                const c = csvRow(l);
+                const n = c[9].replace(/^\{|\}$/g, '');
                 return (n ? n.split(',').length : 0) === Number(c[7]);
               }), L[1].slice(-60));
         });
@@ -1923,12 +2041,12 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
        * 源文件是 11 列空格分隔、表头含中文、列序还和标准名一致，但它多出来的
        * v_spare / Nstats_label / PDOP_label / 备注 全部不外泄。 */
       chk('表头与逗号文件样本逐字相同（输入形态不影响输出规范）',
-          L[0] === 'Time,Longitude,Latitude,Height,Yaw,Pitch,Roll,Visible_Count,PDOP,PRN_label', L[0]);
+          L[0] === EXPORT_HEAD, L[0]);
       chk('源文件的多余列不进导出（含中文列名）',
           L.join('\n').indexOf('v_spare') < 0 && L.join('\n').indexOf('Nstats_label') < 0 &&
           L.join('\n').indexOf('备注') < 0 && L.join('\n').indexOf('落地段') < 0);
-      chk('每行 10 列（修复前数据行只有 1 列）',
-          L.slice(1).every(l => csvCols(l) === 10), '首行 ' + csvCols(L[1]) + ' 列');
+      chk('每行 ' + EXPORT_COLS + ' 列（修复前数据行只有 1 列）',
+          L.slice(1).every(l => csvCols(l) === EXPORT_COLS), '首行 ' + csvCols(L[1]) + ' 列');
       chk('映射后的标准 7 列取自源文件对应的 7 个 token',
           L[1].startsWith(srcRow0.slice(0, 7).join(',') + ','), L[1].slice(0, 60) +
           ' vs ' + srcRow0.slice(0, 7).join(',') + ',');

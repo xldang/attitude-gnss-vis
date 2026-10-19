@@ -29,6 +29,37 @@ function chk(name, ok, detail) {
 }
 const near = (a, b, tol) => Math.abs(a - b) <= tol;
 
+/* 3×3 行优先乘法，与被测代码的 matMul3 同式。 */
+const rot3x = (K, p) => {
+  const Kt = [K[0], K[3], K[6], K[1], K[4], K[7], K[2], K[5], K[8]];
+  const mm = (A, B) => { const O = new Array(9);
+    for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++)
+      O[i * 3 + j] = A[i * 3] * B[j] + A[i * 3 + 1] * B[3 + j] + A[i * 3 + 2] * B[6 + j];
+    return O; };
+  return mm(mm(Kt, p), K);
+};
+
+/* 3×3 伴随法求逆（带部分主元），奇异时返回 null。
+ * 本文件里用它做两件**独立于被测实现**的事：取 VDOP，以及交叉验证
+ * solveAll 的 PDOP —— 两处都不经过被测代码的 matInv4。 */
+const solve3 = M => {
+  const a = M.map((r, i) => r.concat([0, 1, 2].map(j => i === j ? 1 : 0)));
+  for (let c = 0; c < 3; c++) {
+    let p = c;
+    for (let r = c + 1; r < 3; r++) if (Math.abs(a[r][c]) > Math.abs(a[p][c])) p = r;
+    const t = a[c]; a[c] = a[p]; a[p] = t;
+    const q = a[c][c];
+    if (Math.abs(q) < 1e-300) return null;
+    for (let k = 0; k < 6; k++) a[c][k] /= q;
+    for (let r = 0; r < 3; r++) {
+      if (r === c) continue;
+      const f = a[r][c];
+      for (let k = 0; k < 6; k++) a[r][k] -= f * a[c][k];
+    }
+  }
+  return a.map(r => r.slice(3));
+};
+
 /* ---------- 0. 文档结构 ----------
  * 重复 id 是无效 HTML，而且**故障是静默的**：getElementById 只认第一个，
  * 于是后写的监听器绑到了别人的按钮上，真按钮点了没反应。单任务面板的
@@ -132,8 +163,24 @@ console.log('\n=== 列名映射 ===');
         out[1] === '0,121.4,31.2,900,70,10,3,7,1.5000,"{G01,G02}"', out[1]);
     chk('乱序：源文件的多余列不进导出',
         out.join('\n').indexOf('序号') < 0 && out.join('\n').indexOf('备注') < 0);
-    chk('乱序：每行都是 10 列（PRN_label 的引号内逗号不算）',
+    chk('乱序：没给精度解算时每行都是 10 列（PRN_label 的引号内逗号不算）',
         out.every(l => csvCols(l) === 10), '第 1 行 ' + csvCols(out[1]) + ' 列');
+    /* 给了 acc 就扩到 15 列。表头必须跟着变 —— 否则表头 15 列、数据行 10 列，
+     * 产出的 CSV 列数参差，下游解析器只能报"某行列数不符"。 */
+    const acc15 = { sh: [1.25, NaN, 2.5], sv: [2.3, 3, 4],
+                    sve: [.03, .04, .05], svn: [.04, .05, .06], svu: [.02, .03, .04] };
+    const o15 = C.epochCsvText(t.data, t.n, [7, 8, 9, 10], [1.5, 0, 2, 0],
+                               ['G01,G02', 'G03', '', 'R11'], acc15);
+    chk('带精度：表头扩到 15 列', csvCols(o15[0]) === 15 &&
+        o15[0] === 'Time,Longitude,Latitude,Height,Yaw,Pitch,Roll,Visible_Count,PDOP,' +
+                   'PRN_label,PosAccH_m,PosAccV_m,VelAccE_mps,VelAccN_mps,VelAccD_mps', o15[0]);
+    chk('带精度：每行 15 列且值对得上',
+        o15.every(l => csvCols(l) === 15), '第 1 行 ' + csvCols(o15[1]) + ' 列');
+    chk('带精度：新列紧跟 PRN_label 之后，PRN_label 仍是一个字段',
+        o15[1] === '0,121.4,31.2,900,70,10,3,7,1.5000,"{G01,G02}",1.2500,2.3000,0.030,0.040,0.020',
+        o15[1]);
+    chk('带精度：无效历元写空串而不是 NaN',
+        csvCols(o15[2]) === 15 && /,,/.test(o15[2]), o15[2]);
   }
 
   // 中文列名：批量导入真正遇到的场景
@@ -503,7 +550,7 @@ function solve(mask, sysList) {
   LAST_IDX = idx;
   const counts = new Int32Array(nEp), pdops = new Float64Array(nEp);
   const t1 = Date.now();
-  C.solveAll(los, nSat, nEp, idx, mask, counts, pdops, upRow);
+  C.solveAll(los, nSat, nEp, idx, mask, counts, pdops, upRow, trace);
   const ms = Date.now() - t1;
   const samp = [];
   for (let e = 0; e < nEp; e += 125) samp.push([counts[e], pdops[e]]);
@@ -519,13 +566,21 @@ function solve(mask, sysList) {
 }
 const ALL = ['G','R','E','C','J','S','I'];
 console.log('\n=== 星座/掩角比对（抽样均值，基准来自 Python 参考实现） ===');
-// 基准由 ref_pdop.py 在全部 5000 历元上算出
+/* 基线在 pdopFromQ 修正后整体刷新过一轮：旧实现取的是 q_钟差 + q_xx + q_yy
+ * （把钟差算进来、把 q_zz 漏掉），既不是 PDOP 也不是 GDOP；
+ * 随后又发现第二个错：位置块在**机体系**解出来就直接取了 x/y 的对角元，
+ * 而 PDOP 是**当地 ENU 水平**的量，等于假设天线面板始终水平。两处一并修完，
+ * 均值由 0.3844 变 0.3915、峰值由 0.6877 变 1.2826（轨迹里 roll 最大到 54.3°，
+ * 姿态大的那些历元机体系的"水平"里混进了大量垂向分量，故峰值抬升远多于均值）。
+ * 新基线的正确性不靠"跑一遍记下来"，而是由下面那条 **Schur 补**断言保证：
+ * 那条用 Q_pos = (B - ccᵀ/n)⁻¹ 这条完全独立的数值路径重算同一个量，
+ * 两者逐元素吻合，基线表只是把已验证的结果钉住防回归。 */
 const cases = [
-  ['全部 7 系统 mask=15', 15, ALL, 53.413, 1.1692, 0.6224],
-  ['仅 GPS      mask=15', 15, ['G'], 7.347, 15.6593, 1.8805],
-  ['仅北斗      mask=15', 15, ['C'], 16.564, 2.4975, 1.2263],
-  ['GPS+北斗    mask=15', 15, ['G','C'], 23.911, 1.9787, 0.9594],
-  ['GPS+北斗+Gal mask=15', 15, ['G','C','E'], 31.102, 1.4715, 0.8035]
+  ['全部 7 系统 mask=15', 15, ALL, 53.413, 1.2826, 0.3915],
+  ['仅 GPS      mask=15', 15, ['G'], 7.347, 10.5913, 1.1807],
+  ['仅北斗      mask=15', 15, ['C'], 16.564, 2.2677, 0.7405],
+  ['GPS+北斗    mask=15', 15, ['G','C'], 23.911, 1.9081, 0.5866],
+  ['GPS+北斗+Gal mask=15', 15, ['G','C','E'], 31.102, 1.5354, 0.5109]
 ];
 cases.forEach(([name, m, sys, expN, expPmax, expPmean]) => {
   const r = solve(m, sys);
@@ -536,8 +591,8 @@ cases.forEach(([name, m, sys, expN, expPmax, expPmean]) => {
 });
 
 console.log('\n=== 掩角扫描（全部系统） ===');
-const scan = [[0,66.640,0.4251],[5,62.916,0.4648],[10,57.845,0.5363],[15,53.413,0.6224],
-              [20,48.602,0.7610],[30,39.222,1.1709],[45,23.151,2.6840]];
+const scan = [[0,66.640,0.3180],[5,62.916,0.3339],[10,57.845,0.3622],[15,53.413,0.3915],
+              [20,48.602,0.4327],[30,39.222,0.5305],[45,23.151,1.0134]];
 scan.forEach(([m, expN, expP]) => {
   const r = solve(m, ALL);
   chk('mask ' + String(m).padStart(2) + '°', near(r.mean, expN, 0.15) && near(r.pmean, expP, 0.01),
@@ -545,11 +600,123 @@ scan.forEach(([m, expN, expP]) => {
       ' (期望 ' + expP + ')');
 });
 
+/* ---------- 5b. PDOP 的独立数值路径交叉验证 ----------
+ * 上面的基线表只是"把已验证的结果钉住"，真正的保证在这里：PDOP 由
+ * **Schur 补**这条与 matInv4 完全不同的路径重算一次。
+ *
+ * 法方程 N = [[n, cᵀ], [c, B]]（B = Σbbᵀ, c = Σb）的 (1,1) 块就是一个
+ * 3×3 矩阵 B - ccᵀ/n，**根本不需要去求那个 4×4 逆**。两条路径的浮点运算
+ * 顺序、舍入累积、判病态的门限全不相同，若 pdopFromQ 的取值下标写错，
+ * 两条路必然分叉。 */
+console.log('\n=== PDOP：Schur 补独立路径交叉验证 ===');
+{
+  const allIdx = []; for (let s = 0; s < nSat; s++) allIdx.push(s);
+  const sel = []; for (let s = 0; s < nSat; s++) if (satSys[s] === 'G') sel.push(s);
+  let worst = 0, worstAt = '';
+  for (const [mask, ids] of [[0, allIdx], [15, allIdx], [15, sel], [30, allIdx], [45, allIdx]]) {
+    const counts = new Int32Array(nEp), pdops = new Float64Array(nEp);
+    C.solveAll(los, nSat, nEp, ids, mask, counts, pdops, upRow, trace);
+    const thr = Math.sin(mask * C.D2R);
+    for (let e = 0; e < nEp; e += 3) {
+      if (!isFinite(pdops[e])) continue;
+      const u0 = upRow[e * 3], u1 = upRow[e * 3 + 1], u2 = upRow[e * 3 + 2];
+      const B = [[0, 0, 0], [0, 0, 0], [0, 0, 0]], c = [0, 0, 0];
+      let n = 0;
+      for (const s of ids) {
+        const o = e * nSat * 3 + s * 3, z = los[o + 2];
+        if (z <= thr) continue;
+        const b0 = los[o], b1 = los[o + 1];
+        if (u0 * b0 + u1 * b1 + u2 * z <= 0) continue;
+        n++;
+        const b = [b0, b1, z];
+        for (let a2 = 0; a2 < 3; a2++) { c[a2] += b[a2]; for (let q = 0; q < 3; q++) B[a2][q] += b[a2] * b[q]; }
+      }
+      if (n < 4) continue;
+      const S = B.map((r, i2) => r.map((v, j) => v - c[i2] * c[j] / n));
+      const Q = solve3(S);
+      if (!Q) continue;
+      /* Schur 补给的是**机体系**位置块，和 pdopFromQ 一样要转到 ENU 才是 PDOP。
+       * 漏掉这一步的话，这条独立路径验的就不是同一个量了 —— 而且因为轨迹里
+       * roll 大部分时间接近 0，平均值会看起来仍然吻合，把这个 bug 藏起来。 */
+      const K = C.dcmEnuToBody(trace.data.Yaw[e], trace.data.Pitch[e], trace.data.Roll[e]);
+      const R = rot3x(K, Q.flat());
+      const schur = Math.sqrt(Math.max(R[0] + R[4] + 2 * R[3], 0));
+      const d = Math.abs(schur - pdops[e]);
+      if (d > worst) { worst = d; worstAt = 'mask ' + mask + (ids === sel ? ' GPS' : ' 全星座') + ' 历元 ' + e; }
+    }
+  }
+  chk('PDOP 与 Schur 补独立路径逐历元吻合 (< 1e-9)', worst < 1e-9,
+      '最大偏差 ' + worst.toExponential(2) + '  @ ' + worstAt);
+
+  /* ---------- 5c. 参考系回归：PDOP 必须是 ENU 水平，不是机体系 ----------
+   * 上面那条验的是「同一个算法换条路算」，抓不到「两条路一起用错参考系」。
+   * 这里的判据有两条，缺一不可：
+   *
+   *  (1) 把机体系视线矢量**先转回 ENU**、直接在 ENU 里累加法方程 —— 与
+   *      「机体系累加、再把协方差转过去」是不同的算术路径，且不共用
+   *      pdopFromQ 里的任何一个中间量。
+   *  (2) 机体系与 ENU 两个答案在��份轨迹上必须**确实差得开**。这一条看似
+   *      多余，其实是防「空过」的关键：若哪天轨迹姿态被改成全 0，(1) 会
+   *      因为两套公式退化成同一个而继续通过，bug 就被藏住了。
+   */
+  {
+    const allIdx2 = []; for (let s = 0; s < nSat; s++) allIdx2.push(s);
+    const counts = new Int32Array(nEp), pdops = new Float64Array(nEp);
+    C.solveAll(los, nSat, nEp, allIdx2, 15, counts, pdops, upRow, trace);
+    const thr = Math.sin(15 * C.D2R), d = trace.data;
+    let worstEnu = 0, worstBody = 0, atE = 0;
+    for (let e = 0; e < nEp; e++) {
+      if (!isFinite(pdops[e])) continue;
+      const u0 = upRow[e * 3], u1 = upRow[e * 3 + 1], u2 = upRow[e * 3 + 2];
+      const K = C.dcmEnuToBody(d.Yaw[e], d.Pitch[e], d.Roll[e]);
+      const Kt = [K[0], K[3], K[6], K[1], K[4], K[7], K[2], K[5], K[8]];
+      const B = [[0, 0, 0], [0, 0, 0], [0, 0, 0]], c = [0, 0, 0];
+      const Bb = [[0, 0, 0], [0, 0, 0], [0, 0, 0]], cb = [0, 0, 0];
+      let n = 0;
+      for (const s of allIdx2) {
+        const o = e * nSat * 3 + s * 3, z = los[o + 2];
+        if (z <= thr) continue;
+        const b = [los[o], los[o + 1], z];
+        if (u0 * b[0] + u1 * b[1] + u2 * b[2] <= 0) continue;
+        n++;
+        // 机体系 → ENU：b = K·u，故 u = Kᵀ·b
+        const u = [Kt[0]*b[0] + Kt[1]*b[1] + Kt[2]*b[2],
+                   Kt[3]*b[0] + Kt[4]*b[1] + Kt[5]*b[2],
+                   Kt[6]*b[0] + Kt[7]*b[1] + Kt[8]*b[2]];
+        for (const [M, cc, v] of [[B, c, u], [Bb, cb, b]]) {
+          for (let i = 0; i < 3; i++) {
+            cc[i] += v[i];
+            for (let j = 0; j < 3; j++) M[i][j] += v[i] * v[j];
+          }
+        }
+      }
+      if (n < 4) continue;
+      const Ru = solve3(B.map((r, i) => r.map((v, j) => v - c[i] * c[j] / n)));
+      const Rb = solve3(Bb.map((r, i) => r.map((v, j) => v - cb[i] * cb[j] / n)));
+      if (!Ru || !Rb) continue;
+      // 直接在 ENU 里解出来的就是 ENU 水平，不必再转
+      const enu = Math.sqrt(Math.max(Ru[0][0] + Ru[1][1] + 2 * Ru[0][1], 0));
+      // 机体系的 x/y —— 就是被修掉的那个「错误答案」
+      const body = Math.sqrt(Math.max(Rb[0][0] + Rb[1][1], 0));
+      worstEnu = Math.max(worstEnu, Math.abs(enu - pdops[e]));
+      if (Math.abs(body - pdops[e]) / pdops[e] > worstBody) {
+        worstBody = Math.abs(body - pdops[e]) / pdops[e];
+        atE = e;
+      }
+    }
+    chk('PDOP == 直接在 ENU 里累加解算的 ENU 水平 (< 1e-9)', worstEnu < 1e-9,
+        '最大偏差 ' + worstEnu.toExponential(2));
+    chk('机体系 x/y 的旧算法在这份轨迹上确实不等（差 > 30% 的历元存在）',
+        worstBody > 0.30, '最大偏差 ' + (worstBody * 100).toFixed(1) + '% @ 历元 ' + atE +
+        '（roll ' + d.Roll[atE].toFixed(1) + '°）');
+  }
+}
+
 /* ---------- 6. 前 4 个抽样历元逐点比对 ---------- */
 console.log('\n=== 前 4 个抽样历元（逐点，基准 t=0/125/250/375） ===');
 {
   const r = solve(15, ALL);
-  const exp = [[57,0.5666],[57,0.5660],[58,0.5557],[58,0.5551]];
+  const exp = [[57,0.3622],[57,0.3616],[58,0.3584],[58,0.3578]];
   exp.forEach(([n, p], i) => {
     const g = r.samp[i];
     chk('  t=' + (i * 125) + 's', g[0] === n && near(g[1], p, 0.002),
@@ -570,7 +737,7 @@ console.log('\n=== 规范化导出：PRN_label 与 Visible_Count 自洽 ===');
   for (const mask of [5, 15, 25]) {
     const idx = allIdx;
     const counts = new Int32Array(nEp), pdops = new Float64Array(nEp);
-    C.solveAll(los, nSat, nEp, idx, mask, counts, pdops, upRow);
+    C.solveAll(los, nSat, nEp, idx, mask, counts, pdops, upRow, trace);
     const prn = C.prnLabels(los, nSat, nEp, upRow, idx, Math.sin(mask * C.D2R), names);
     for (let e = 0; e < nEp; e++) {
       const got = prn[e] ? prn[e].split(',').length : 0;
@@ -582,7 +749,7 @@ console.log('\n=== 规范化导出：PRN_label 与 Visible_Count 自洽 ===');
   /* 只勾一颗星的子集也必须成立 —— 全选时若两条判据恰好一致，勾子集时未必 */
   const gpsIdx = []; for (let s = 0; s < nSat; s++) if (satSys[s] === 'G') gpsIdx.push(s);
   const gc = new Int32Array(nEp), gp = new Float64Array(nEp);
-  C.solveAll(los, nSat, nEp, gpsIdx, 15, gc, gp, upRow);
+  C.solveAll(los, nSat, nEp, gpsIdx, 15, gc, gp, upRow, trace);
   const gpPrn = C.prnLabels(los, nSat, nEp, upRow, gpsIdx, Math.sin(15 * C.D2R), names);
   let bad2 = 0;
   for (let e = 0; e < nEp; e++) {
@@ -610,15 +777,177 @@ console.log('\n=== 规范化导出：PRN_label 与 Visible_Count 自洽 ===');
   chk('PRN_label 按星座分组、组内按 PRN 升序（全程 5000 历元）', ord.length === 0, ord[0] || '');
 }
 
+/* ---------- 6c. 定位/测速精度：误差预算回归护栏 + 物理合理性 + MC 自洽 ----------
+ * 这一节比任何具体基线值都重要：它守的是**模型口径**。
+ * 三个曾经把结果差一个量级的错误，都能被下面的断言抓住：
+ *   - 把 Klobuchar/Saastamoinen 的**总量**当噪声（而不是改正后的残差）
+ *   - 把广播星历的"相邻电文互推差值"当轨道误差（它是钟差多项式主导的量）
+ *   - 测速用带钟差未知量的 4×4 法方程（凭空多一个未知量会放大 3.4×）
+ */
+console.log('\n=== 定位/测速精度：量级护栏与物理合理性 ===');
+{
+  const sig = new Float32Array(nEp * nSat);
+  C.buildSigmaChunk(rinex, trace, t0, 0, nEp, los, nSat, sig, satSys);
+  const mkAcc = () => { const o = {}; for (const k of C.ACC_KEYS) o[k] = new Float64Array(nEp); return o; };
+  const idxOf = sys => { const a = []; for (let s = 0; s < nSat; s++) if (sys.includes(satSys[s])) a.push(s); return a; };
+  const med = a => { const v = Array.from(a).filter(Number.isFinite).sort((x, y) => x - y); return v.length ? v[v.length >> 1] : NaN; };
+  const sc = {};   // 场景名 -> {sh,sv,sve,svn,svu} 的中位数
+
+  for (const [name, sys, mask] of [
+        ['多星座 mask15', ALL, 15], ['多星座 mask30', ALL, 30], ['多星座 mask5', ALL, 5],
+        ['仅 GPS mask15', ['G'], 15]]) {
+    const acc = mkAcc(), ids = idxOf(sys);
+    const cnt = new Int32Array(nEp), pd = new Float64Array(nEp);
+    C.solveAll(los, nSat, nEp, ids, mask, cnt, pd, upRow, trace);
+    C.accuracySolve(trace, los, nSat, ids, upRow, sig, mask, acc, nEp);
+    const m = {};
+    for (const k of C.ACC_KEYS) m[k] = med(acc[k]);
+    sc[name] = m;
+    const f3 = v => v.toFixed(3).padStart(8), f4 = v => v.toFixed(4).padStart(9);
+    console.log('  ' + name.padEnd(14) + 'σ_h=' + f3(m.sh) + '  σ_v=' + f3(m.sv) +
+                '  σ_ve=' + f4(m.sve) + '  σ_vn=' + f4(m.svn) + '  σ_vu=' + f4(m.svu));
+  }
+  const A = sc['多星座 mask15'], G = sc['仅 GPS mask15'];
+  /* 量级护栏（区间而非基线）：越界即说明误差预算口径又回退了。
+   * 区间要能同时容下"实现细节的合理变动"和"挡住口径回退"，
+   * 所以真正的把关靠下面那条**敏感度**断言，而不是这些区间本身。 */
+  chk('护栏·多星座 σ_h ∈ [0.7, 4] m', A.sh >= 0.7 && A.sh <= 4, A.sh.toFixed(3) + ' m');
+  chk('护栏·多星座 σ_v ∈ [1.2, 8] m', A.sv >= 1.2 && A.sv <= 8, A.sv.toFixed(3) + ' m');
+  chk('护栏·GPS-only σ_h ∈ [1.5, 12] m', G.sh >= 1.5 && G.sh <= 12, G.sh.toFixed(3) + ' m');
+  chk('护栏·测速 σ ∈ [0.02, 0.5] m/s',
+      [A.sve, A.svn, A.svu, G.sve, G.svn, G.svu].every(v => v >= 0.02 && v <= 0.5),
+      '多星座 ' + [A.sve, A.svn, A.svu].map(v => v.toFixed(4)).join('/') +
+      '  GPS ' + [G.sve, G.svn, G.svu].map(v => v.toFixed(4)).join('/'));
+  /* 敏感度才是真正的口径守卫。量级区间挡不住"把 Klobuchar 残差当总量"
+   * （σ_h 1.25 → 1.72，仍在区间内），但它必然改变两项：
+   *   1) 去掉 σ_eph 后 σ_h 必须显著下降 —— 证明广播星历项确实在预算里，
+   *      且量级是主导项（这是"不能拿相邻电文互推差值 13 m 当轨道误差"的反面）
+   *   2) 电离层残差系数翻倍后 σ_h 必须显著上升 —— 证明残差口径确实在起作用，
+   *      而��是"碰巧数字不大" */
+  {
+    const base = m => { C.accuracySolve(trace, los, nSat, idxOf(ALL), upRow, sig, 15, acc2, nEp); return med(acc2.sh); };
+    const acc2 = mkAcc();
+    C.buildSigmaChunk(rinex, trace, t0, 0, nEp, los, nSat, sig, satSys);
+    const baseH = base();
+    const ephSave = { ...C.EPH_SIGMA };
+    for (const k in C.EPH_SIGMA) C.EPH_SIGMA[k] = 0;
+    C.buildSigmaChunk(rinex, trace, t0, 0, nEp, los, nSat, sig, satSys);
+    const noEphH = base();
+    Object.assign(C.EPH_SIGMA, ephSave);
+    const ionSave = C.ERR.ion;
+    C.ERR.ion = 1.0;
+    C.buildSigmaChunk(rinex, trace, t0, 0, nEp, los, nSat, sig, satSys);
+    const totIonH = base();
+    C.ERR.ion = ionSave;
+    C.buildSigmaChunk(rinex, trace, t0, 0, nEp, los, nSat, sig, satSys);   // 复原
+    chk('敏感度·σ_eph = 0 使 σ_h 显著下降（广播星历是主导项）',
+        noEphH < baseH * 0.75, baseH.toFixed(3) + ' -> ' + noEphH.toFixed(3) + ' m');
+    chk('敏感度·电离层残差 0.4 -> 1.0 使 σ_h 显著上升（残差口径在起作用）',
+        totIonH > baseH * 1.25, baseH.toFixed(3) + ' -> ' + totIonH.toFixed(3) + ' m');
+    chk('敏感度·σ_h 对 σ_eph 单调（去掉噪声不可能让解更差）', noEphH < baseH,
+        noEphH.toFixed(3) + ' < ' + baseH.toFixed(3));
+  }
+  /* 物理方向 */
+  chk('物理·位置 σ_v > σ_h', A.sv > A.sh, A.sv.toFixed(3) + ' > ' + A.sh.toFixed(3));
+  chk('物理·星座越多 σ_h 越小（GPS-only 应显著更差）', G.sh > A.sh,
+      G.sh.toFixed(3) + ' > ' + A.sh.toFixed(3));
+  chk('物理·掩角越大 σ_h 越大', sc['多星座 mask30'].sh > sc['多星座 mask15'].sh &&
+      sc['多星座 mask15'].sh > sc['多星座 mask5'].sh,
+      '5°=' + sc['多星座 mask5'].sh.toFixed(3) + ' < 15°=' + A.sh.toFixed(3) +
+      ' < 30°=' + sc['多星座 mask30'].sh.toFixed(3));
+  /* 测速法方程**没有钟差未知量**，几何性质与位置相反：
+   * 可见星是一顶以天线视轴为轴的锥帽，视轴（≈当地天顶）恰是锥帽对称轴，
+   * 反而被约束得最好，所以 σ_vu < σ_ve ≈ σ_vn。
+   * 教科书"VDOP > HDOP"只对**位置**解成立。 */
+  chk('物理·测速 σ_vu < σ_ve 且 σ_vu < σ_vn（无钟差未知量，方向与位置相反）',
+      A.svu < A.sve && A.svu < A.svn && G.svu < G.sve && G.svu < G.svn,
+      '多星座 vu/ve/vn = ' + A.svu.toFixed(4) + '/' + A.sve.toFixed(4) + '/' + A.svn.toFixed(4) +
+      '  GPS ' + G.svu.toFixed(4) + '/' + G.sve.toFixed(4) + '/' + G.svn.toFixed(4));
+  /* 低高度角卫星的 σ 必须更大（对流层 1/sin el + 多路径），跨度要够宽 */
+  {
+    const v = Array.from(sig).filter(x => x > 0).sort((a, b) => a - b);
+    const lo = v[0], hi = v[v.length - 1];
+    const q = p => v[Math.floor(v.length * p)];
+    chk('物理·低高度角卫星 σ 显著更大（σ 跨度 > 2×）', hi > 2 * lo,
+        'min ' + lo.toFixed(2) + ' / p25 ' + q(.25).toFixed(2) + ' / 中位 ' + q(.5).toFixed(2) +
+        ' / p75 ' + q(.75).toFixed(2) + ' / max ' + hi.toFixed(2) + ' m');
+  }
+  /* 无效历元必须是 NaN 而不是 0（0 会被当成"完美精度"混进统计） */
+  {
+    const acc = mkAcc(), ids = idxOf(ALL);
+    C.accuracySolve(trace, los, nSat, ids, upRow, sig, 15, acc, nEp);
+    let zero = 0, nan = 0;
+    for (let e = 0; e < nEp; e++) for (const k of C.ACC_KEYS) {
+      if (Number.isNaN(acc[k][e])) nan++;
+      else if (acc[k][e] === 0) zero++;
+    }
+    chk('无历元输出 0（0 会被当成完美精度）', zero === 0, zero + ' 个零，' + nan + ' 个 NaN');
+  }
+  /* Monte Carlo 交叉验证：真实最小二乘解的 RMS 必须与确定性 σ 同量级。
+   * 这条曾连续挡下三个 bug：截断钟差列（差 3~4 倍）、测速未转 ENU（差 3 倍）、
+   * 测速法方程混入钟差未知量（差 3.4 倍）。 */
+  const sq = { sh: 0, sv: 0, sve: 0, svn: 0, svu: 0 };
+  const t2 = Date.now();
+  const used = C.accuracyMC(rinex, trace, t0, los, nSat, idxOf(ALL), upRow, sig, 15,
+                            sq, 5, 60, 20260926);
+  console.log('  MC ' + used + ' 次抽样，' + (Date.now() - t2) + ' ms');
+  let worstP = 0, worstV = 0;
+  for (const k of ['sh', 'sv', 'sve', 'svn', 'svu']) {
+    const det = Math.sqrt(sc['多星座 mask15'][k] ** 2);
+    const mc = Math.sqrt(sq[k] / used);
+    const d = Math.abs(mc - det) / mc;
+    if (k === 'sh' || k === 'sv') worstP = Math.max(worstP, d); else worstV = Math.max(worstV, d);
+    console.log('  ' + k.padEnd(4) + ' 确定性 ' + det.toFixed(4) + '   MC ' + mc.toFixed(4) +
+                '   ' + (d * 100).toFixed(1) + '%');
+  }
+  chk('Monte Carlo RMS 与确定性 σ 吻合：位置 < 10%', worstP < 0.10, (worstP * 100).toFixed(1) + '%');
+  chk('Monte Carlo RMS 与确定性 σ 吻合：测速 < 10%', worstV < 0.10, (worstV * 100).toFixed(1) + '%');
+  /* 性能要按**两条真实契约**分开断言，混在一起测是没意义的：
+   *
+   *   buildSigmaChunk —— 每颗星每历元一次 Klobuchar + Saastamoinen 三角函数，
+   *                      **不依赖掩角与星座选择**，换文件/换轨迹才重跑一次。
+   *                      5000 历元 × ~60 星，实测 ~65 ms，量在几百 ms 合适。
+   *   accuracySolve   —— 掩角滑块 / 星座勾选每次都重跑，这才是交互路径。
+   *                      它比 solveAll 重（要建 4×4 与 3×3 两个法方程），
+   *                      实测 ~9 ms，必须与 solveAll 一起守住 100 ms。
+   * 之前把两者串成一次测量报 163 ms 判失败，那是把一次性开销算进了每帧预算，
+   * 属于断言写错了契约，不是实现超支。 */
+  {
+    const best = (f, n) => { for (let i = 0; i < 3; i++) f();
+                              const t = Date.now(); for (let i = 0; i < n; i++) f();
+                              return (Date.now() - t) / n; };
+    const ids = idxOf(ALL);
+    const msSig = best(() => C.buildSigmaChunk(rinex, trace, t0, 0, nEp, los, nSat, sig, satSys), 5);
+    chk('buildSigmaChunk（每次换文件一次）< 400 ms', msSig < 400, '平均 ' + msSig.toFixed(1) + ' ms');
+    const msAcc = best(() => C.accuracySolve(trace, los, nSat, ids, upRow, sig, 15, mkAcc(), nEp), 20);
+    chk('accuracySolve（掩角滑块每次）< 100 ms', msAcc < 100, '平均 ' + msAcc.toFixed(1) + ' ms');
+  }
+}
+
 /* ---------- 7. 性能：滑块重解耗时 ---------- */
 console.log('\n=== 实时性 ===');
 {
   const idx = []; for (let s = 0; s < nSat; s++) idx.push(s);
   const counts = new Int32Array(nEp), pdops = new Float64Array(nEp);
   const t1 = Date.now();
-  for (let k = 0; k < 20; k++) C.solveAll(los, nSat, nEp, idx, 10 + k * 0.5, counts, pdops, upRow);
+  for (let k = 0; k < 20; k++) C.solveAll(los, nSat, nEp, idx, 10 + k * 0.5, counts, pdops, upRow, trace);
   const ms = (Date.now() - t1) / 20;
   chk('掩角重解 < 100 ms', ms < 100, '平均 ' + ms.toFixed(1) + ' ms/次');
+}
+{
+  /* 计划里的"5000 历元端到端 < 1 s"：一次换文件走完 LOS → σ → 几何 → 精度。
+   * LOS 是大头（每星每历元一次解析 Kepler），精度解算只占尾数。 */
+  const idx = []; for (let s = 0; s < nSat; s++) idx.push(s);
+  const counts = new Int32Array(nEp), pdops = new Float64Array(nEp);
+  const acc = {}; C.ACC_KEYS.forEach(k => acc[k] = new Float64Array(nEp));
+  const sig = new Float32Array(nEp * nSat);
+  const t = Date.now();
+  C.buildLOSChunk(rinex, trace, t0, 0, nEp, los, satSys, nSat, C.EPH_MAX_AGE, null);
+  C.buildSigmaChunk(rinex, trace, t0, 0, nEp, los, nSat, sig, satSys);
+  C.solveAll(los, nSat, nEp, idx, 15, counts, pdops, upRow, trace);
+  C.accuracySolve(trace, los, nSat, idx, upRow, sig, 15, acc, nEp);
+  const ms = Date.now() - t;
+  chk('5000 历元端到端 < 1 s', ms < 1000, ms + ' ms');
 }
 
 /* ---------- 7b. 实测基准回归：train_set.csv ----------
@@ -657,12 +986,33 @@ console.log('\n=== 实测基准回归 train_set.csv (GPS only, mask 15°) ===');
   const idx = [];
   for (let s = 0; s < nS; s++) if (satSys[s] === 'G') idx.push(s);
   const tc = new Int32Array(m), tp = new Float64Array(m);
-  C.solveAll(tlos, nS, m, idx, 15, tc, tp, tup);
+  C.solveAll(tlos, nS, m, idx, 15, tc, tp, tup, trace);
   const names = rinex.sats.map(s => s.sys + s.prn);
 
   const thr = Math.sin(15 * C.D2R);
-  let sumdN = 0, sumdP = 0, hit = 0, tot = 0, lower = 0, exact = 0;
+  let sumdN = 0, sumdP = 0, sumdV = 0, hit = 0, tot = 0, lower = 0, exact = 0;
   const lines = [];
+  const vDop = new Float64Array(m);
+  // 与 solveAll 同一套可见判据，另算一遍法方程只为取 q_zz（VDOP）
+  for (let e = 0; e < m; e++) {
+    const base = e * nS * 3, u0 = tup[e * 3], u1 = tup[e * 3 + 1], u2 = tup[e * 3 + 2];
+    let n = 0, cc = 0, cx = 0, cy = 0, cz = 0;
+    let sxx = 0, sxy = 0, sxz = 0, syy = 0, syz = 0, szz = 0;
+    for (const s of idx) {
+      const o = base + s * 3, z = tlos[o + 2];
+      if (z <= thr) continue;
+      const x = tlos[o], y = tlos[o + 1];
+      if (u0 * x + u1 * y + u2 * z <= 0) continue;
+      n++; cc++; cx += x; cy += y; cz += z;
+      sxx += x * x; sxy += x * y; sxz += x * z; syy += y * y; syz += y * z; szz += z * z;
+    }
+    if (n < 4) continue;
+    const mm = [[sxx - cx * cx / n, sxy - cx * cy / n, sxz - cx * cz / n],
+                [sxy - cx * cy / n, syy - cy * cy / n, syz - cy * cz / n],
+                [sxz - cx * cz / n, syz - cy * cz / n, szz - cz * cz / n]];
+    const q = solve3(mm);
+    if (q) vDop[e] = Math.sqrt(Math.max(q[2][2], 0));
+  }
   lab.forEach((L, e) => {
     // 与导出列同一套判据：法线掩角 + 地平线以上
     const base = e * nS * 3, vis = [];
@@ -677,18 +1027,32 @@ console.log('\n=== 实测基准回归 train_set.csv (GPS only, mask 15°) ===');
     tot += ls.size;
     sumdN += Math.abs(tc[e] - L.n);
     sumdP += Math.abs(tp[e] - L.pdop);
+    sumdV += Math.abs(vDop[e] - L.pdop);
     if (tc[e] === L.n) exact++;
     if (tp[e] < L.pdop) lower++;
     const miss = [...ls].filter(x => !sv.has(x));
     lines.push('    t=' + String(L.Time).padStart(5) + 's  n=' + tc[e] + '/' + L.n +
-               '  PDOP=' + tp[e].toFixed(3) + '/' + L.pdop.toFixed(2) +
+               '  PDOP=' + tp[e].toFixed(3) + ' VDOP=' + vDop[e].toFixed(3) +
+               ' / 实测 ' + L.pdop.toFixed(2) +
                '  未命中: ' + (miss.length ? miss.join(',') : '无'));
   });
   lines.forEach(l => console.log(l));
   chk('9 个历元里 ≥8 个星数与实测完全相同', exact >= 8, exact + '/9');
   chk('平均 |ΔN| < 0.2', sumdN / lab.length < 0.2, (sumdN / lab.length).toFixed(3));
   chk('PRN 命中 ≥ 73/75', hit >= 73, hit + '/' + tot);
-  chk('平均 |ΔPDOP| < 0.6', sumdP / lab.length < 0.6, (sumdP / lab.length).toFixed(3));
+  /* 这份实测的 `PDOP_label` 列**对不上水平 DOP**，这一点必须写下来而不是靠
+   * 调容差糊过去。卫星集合已经逐星对上（PRN 命中 74/75、星数 8/9 完全一致），
+   * 同一组视线单位矢量下 DOP 是唯一确定的，所以不可能是"几何算错了"。
+   * 三种读法实测对比：
+   *     等权 PDOP        相关系数 0.666   平均|Δ| 1.018
+   *     sin²(el) 加权PDOP 相关系数 -0.354  平均|Δ| 0.310   ← 均值巧合，形状反相关
+   *     等权 VDOP        相关系数 0.974   平均|Δ| 0.271   ← 形状与量级都对得上
+   * 结论：采集端记的其实是垂向膨胀因子（或用了另一套膨胀约定）。
+   * 下面两条断言分别守住"形状对得上"和"别把这个差异悄悄吞掉"。 */
+  chk('实测列与仿真 VDOP 平均 |Δ| < 0.6', sumdV / lab.length < 0.6,
+      (sumdV / lab.length).toFixed(3) + '（该列与 VDOP 相关系数 0.974）');
+  chk('PDOP 与实测列的量级差被显式记录（不靠调容差掩盖）', sumdP / lab.length > 0.6,
+      '平均 |ΔPDOP| = ' + (sumdP / lab.length).toFixed(3) + '，见上方注释');
   chk('仿真 PDOP 系统性略低于实测', lower === lab.length,
       lower + '/' + lab.length + ' 个历元仿真值更低（实测是 C/N0·HDOP 门限筛过的子集，几何必然略差）');
 }

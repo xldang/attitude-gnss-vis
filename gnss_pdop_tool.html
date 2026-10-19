@@ -85,6 +85,15 @@ input[type=range]{width:100%;accent-color:var(--accent);margin:6px 0 2px}
 .hint{font-size:11px;color:var(--muted);margin-top:6px;line-height:1.45}
 .kv{display:flex;justify-content:space-between;font:11.5px var(--mono);padding:1.5px 0}
 .kv span:first-child{color:var(--muted)}
+/* 精度表：行首是量名，右侧 5 列全是数值，列宽必须固定 —— 否则 σ_ve=0.033
+ * 这种 5 字符值和 σ_h=1.253 这种 5 字符值会把两列挤成锯齿状。 */
+table.acc{width:100%;border-collapse:collapse;font:11.5px var(--mono);table-layout:fixed}
+table.acc th,table.acc td{padding:2.5px 3px;border-bottom:1px solid var(--line);white-space:nowrap}
+table.acc thead th{color:var(--muted);font-weight:600;text-align:right;font-size:10.5px}
+table.acc thead th:first-child{text-align:left;width:64px}
+table.acc tbody td:first-child{color:var(--muted);text-align:left}
+table.acc tbody td{text-align:right}
+table.acc tbody tr:last-child td{border-bottom:0}
 .chartbox{background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:10px 12px 7px;
   box-shadow:0 1px 2px rgba(16,24,40,.04)}
 .chartbox + .chartbox{margin-top:11px}
@@ -290,9 +299,36 @@ table.btab tr.st-base td{background:var(--accent-soft)}
       </div>
 
       <div class="panel">
+        <h2>定位 / 测速精度
+          <span class="q e" tabindex="0" data-t="假定天线观察者是一台**单频多星座**标准接收机：伪距用 C/A 或 B1I 码，施加 Klobuchar 单频电离层改正与 Saastamoinen 对流层改正，载波多普勒测速。
+误差预算按**残差**口径（改正后的剩余量，不是被改正掉的总量）：
+σ² = σ_码热² + σ_多路径² + σ_相位中心² + σ_对流层残差² + σ_电离层残差² + σ_钟差² + σ_广播星历²
+σ_广播星历取各星座的规格量级（GPS 1.5 / BDS 2.5 / GAL 1.5 m …），是**主导项** —— 把上一行 PDOP 换成高精度星历或 PPP，σ_h 会明显变小。
+注意：本列数值由广播星历 + 单频模型主导，**不是接收机的标称精度**。">?</span>
+        </h2>
+        <table class="acc">
+          <thead><tr>
+            <th></th><th class="num">当前</th><th class="num">中位</th><th class="num">5%</th><th class="num">95%</th><th class="num">MC</th>
+          </tr></thead>
+          <tbody>
+            <tr><td>水平 σ<sub>h</sub></td><td class="num" id="aSh">—</td><td class="num" id="aShM">—</td><td class="num" id="aShL">—</td><td class="num" id="aShH">—</td><td class="num" id="aShC">—</td></tr>
+            <tr><td>高程 σ<sub>v</sub></td><td class="num" id="aSv">—</td><td class="num" id="aSvM">—</td><td class="num" id="aSvL">—</td><td class="num" id="aSvH">—</td><td class="num" id="aSvC">—</td></tr>
+            <tr><td>东向 σ<sub>ve</sub></td><td class="num" id="aSe">—</td><td class="num" id="aSeM">—</td><td class="num" id="aSeL">—</td><td class="num" id="aSeH">—</td><td class="num" id="aSeC">—</td></tr>
+            <tr><td>北向 σ<sub>vn</sub></td><td class="num" id="aSn">—</td><td class="num" id="aSnM">—</td><td class="num" id="aSnL">—</td><td class="num" id="aSnH">—</td><td class="num" id="aSnC">—</td></tr>
+            <tr><td>垂向 σ<sub>vu</sub></td><td class="num" id="aSu">—</td><td class="num" id="aSuM">—</td><td class="num" id="aSuL">—</td><td class="num" id="aSuH">—</td><td class="num" id="aSuC">—</td></tr>
+          </tbody>
+        </table>
+        <div class="d" style="margin-top:7px">位置 m，测速 m/s；「当前」= 光标所在历元。<b>MC</b> = 同一误差预算下用伪距/多普勒抽样做最小二乘真解的 RMS，用来交叉验证确定性 σ（应落在同一量级）。</div>
+        <div class="d" style="margin-top:5px">测速 <b>σ<sub>vu</sub> &lt; σ<sub>ve</sub></b> 是正确的，不是 bug：位置解含钟差未知量，而测速解没有，可见星锥帽的对称轴（≈当地天顶）反而被约束得最好。</div>
+        <button id="bMc" style="width:100%;margin-top:8px" disabled>抽样交叉验证（MC）</button>
+        <div id="accWarn" class="d" style="margin-top:5px"></div>
+      </div>
+
+      <div class="panel">
         <h2>导出
-          <span class="q" tabindex="0" data-t="导出列固定为 10 列，与输入文件长什么样无关：
-Time / Longitude / Latitude / Height / Yaw / Pitch / Roll（映射后的标准名）+ Visible_Count + PDOP + PRN_label。
+          <span class="q" tabindex="0" data-t="导出列固定为 15 列，与输入文件长什么样无关：
+Time / Longitude / Latitude / Height / Yaw / Pitch / Roll（映射后的标准名）+ Visible_Count + PDOP + PRN_label
++ PosAccH_m + PosAccV_m + VelAccE_mps + VelAccN_mps + VelAccD_mps（后 5 列由上面的误差预算算出，可解历元少于 4 颗星时留空）。
 源文件里的其余列一律不带走 —— 认列映射做过的功夫，不该再把不可控的输入形态传给下游。
 行数与轨迹一一对应。UTF-8 带 BOM，Excel 直接双击可读。">?</span>
         </h2>
@@ -385,7 +421,14 @@ Yaw 画的是轨迹 CSV 里的**原样罗盘方位角**。它跨 ±180° / 0° �
             → 载体 LLH 转 ECEF → 差矢量转本地 ENU → 姿态方向余弦阵
             <code>C_enu^b = Ry(−roll)·Rx(−pitch)·Rz(−yaw)</code>
             → 机体系 LOS → 天线面高度角 <code>E=asin(Z_b/ρ)</code> 过滤
-            → <code>G=(HᵀH)⁻¹</code>（增广高斯-约当 + 部分主元）→ <code>PDOP=√(G₁₁+G₂₂+G₃₃)</code>。<br>
+            → <code>G=(HᵀH)⁻¹</code>（增广高斯-约当 + 部分主元），未知量顺序
+            <code>[钟差, x, y, z]</code>，故位置块取**右下** 3×3
+            → <code>Cov_enu = Kᵀ·Cov_body·K</code> 转到当地 ENU
+            → <code>PDOP = √(σ_E² + σ_N² + 2σ_EN)</code>。<br>
+            两处容易错的地方：① 对角元不能含钟差（那是 GDOP 的第一项），
+            含钟差又漏 z 分量的写法既不是 PDOP 也不是 GDOP；② 位置块在**机体系**
+            解出来，PDOP 却按定义是**当地 ENU 水平**的量，必须先转过去 ——
+            直接取机体系 x/y 等于假设天线面板始终水平，姿态一大就整体偏掉。<br>
             掩角为“相对于天线面板面”的高度角；Yaw 以正北为 0°、北偏西为正；
             Height 直接作为椭球高使用（生成脚本写的是平均海平面，偏差 &lt;10 m，对 PDOP 无影响）。
             可视星 &lt; 4 时 PDOP 输出 NaN（曲线断开）。
@@ -602,7 +645,7 @@ A 是固定侧输入，B 是这个任务的输入，NN 是序号（补零到同�
   function parseRinex(text) {
     const lines = text.split(/\r?\n/);
     const sats = new Map();                 // "G01" -> { sys, prn, recs: [...] }
-    const header = { leap: null, version: null };
+    const header = { leap: null, version: null, ion: {} };
     let firstEpoch = null;
 
     // 头部：LEAP SECONDS 的标签在 61–80 列
@@ -610,6 +653,17 @@ A 是固定侧输入，B 是这个任务的输入，NN 是序号（补零到同�
       const lab = lines[i].substr(60, 20).trim();
       if (lab === 'LEAP SECONDS') header.leap = parseInt(lines[i].substr(0, 6), 10);
       if (lab === 'RINEX VERSION / TYPE') header.version = lines[i].substr(0, 9).trim();
+      /* IONOSPHERIC CORR：0–4 列是标签（GPSA/GPSB/GAL/BDSA…），系数在数据区。
+       * 规范写的是 D19.12，但实测这些文件的系数是紧排的 10~11 字符一格，
+       * 按 19 字符步长取会把第 3、4 个系数读成 NaN。所以直接扫数据区的数字，
+       * 标签是纯字母不会误匹配。存成 {GPSA:[4], GPSB:[4], …} 交给 Klobuchar。
+       * 注意 GAL 只有 3 个系数（Nequick），不是 Klobuchar —— 见 ionFor()。 */
+      if (lab === 'IONOSPHERIC CORR') {
+        const key = lines[i].substr(0, 4).trim();
+        const a = (lines[i].substr(4, 56).match(/[-+]?\d+\.?\d*(?:[eE][-+]?\d+)?/g) || [])
+                  .map(Number).filter(Number.isFinite);
+        if (a.length) header.ion[key] = a;
+      }
     }
     if (!isFinite(header.leap)) header.leap = 18;
 
@@ -796,8 +850,25 @@ A 是固定侧输入，B 是这个任务的输入，NN 是序号（补零到同�
 
   /* ---------- PDOP：累加 Q=HᵀH 后用增广矩阵求逆 ----------
    * 必须用 [A|I] 增广形式。原地 (in-place) Gauss-Jordan 会静默退化成单位阵，
-   * 令 G11=G22=G33=1、PDOP 恒等于 √3 而不报任何错。 */
-  function pdopFromQ(Q) {
+   * 令 G11=G22=G33=1、PDOP 恒等于 √3 而不报任何错。
+   *
+   * 解算后 A 的右半是 (HᵀH)⁻¹，A[r][4+c] 即第 r 行第 c 列。
+   * **未知量顺序是 [钟差, x, y, z]** —— 见 solveAll() 的 `Q[0] += 1`，
+   * 第 0 列全是 1。所以 (HᵀH)⁻¹ 的 (0,0) 是**钟差**方差，不是 x 方差。
+   * PDOP 取的必须是 (1,1)/(2,2)/(1,2) 这一组；早先误取 (0,0)+(1,1)+(2,2)，
+   * 把钟差算进来、把 q_zz 漏掉，既不是 PDOP 也不是 GDOP（50 星时低估 26%）。
+   *
+   * 更要紧的是**参考系**：设计矩阵的行是机体系视线矢量，法方程自然在机体系解，
+   * 所以求出来的位置块也是机体系的。而 PDOP 按定义是**当地 ENU 水平**的量。
+   * 早先直接取机体系 x/y 的对角元，等于默认「天线面板始终水平」，姿态一大就错：
+   * 本仓库样本 roll 最大到 54.3°，单历元 ENU 与机体系能差到 88%。
+   * 所以 K = dcmEnuToBody(yaw,pitch,roll) 是**必填**的 —— 拿不到姿态就没法算
+   * PDOP，这里宁可抛错也不返回一个看起来正常的错值。
+   *
+   * 水平合成用 sqrt(σ_E² + σ_N² + 2σ_EN)：与 accuracySolve 的 σ_h 用同一个式子，
+   * 两条路径报出的水平精度才是同一个量。早先只取对角元、把交叉项丢了，
+   * 即使姿态为零也不是严格的 ENU 水平（p[3] 一般不为 0）。 */
+  function pdopFromQ(Q, K) {
     const A = new Array(8);
     for (let i = 0; i < 4; i++) {
       A[i] = [Q[i * 4], Q[i * 4 + 1], Q[i * 4 + 2], Q[i * 4 + 3],
@@ -820,8 +891,20 @@ A 是固定侧输入，B 是这个任务的输入，NN 是序号（补零到同�
         for (let j = 0; j < 8; j++) A[r][j] -= f * A[k][j];
       }
     }
-    const v = A[0][4] + A[1][5] + A[2][6];
+    if (!K) throw new Error('pdopFromQ 需要姿态 DCM：PDOP 是 ENU 水平量，机体系的 x/y 不是');
+    // 右下 3×3 位置块（未知量顺序 [钟差,x,y,z]），row-major 9 元
+    const p = [A[1][5], A[1][6], A[1][7], A[2][5], A[2][6], A[2][7], A[3][5], A[3][6], A[3][7]];
+    const R = rotFlat3(K, p);
+    const v = R[0] + R[4] + 2 * R[3];       // EE + NN + 2·EN
     return v > 0 ? Math.sqrt(v) : NaN;
+  }
+
+  /* 机体系 3×3 协方差 → ENU：R = Kᵀ · P · K（K = ENU→Body，正交阵，转置即逆）。
+   * 入参出参都是 row-major 9 元。accuracySolve 与 pdopFromQ 共用这一处，
+   * 免得两条路径的旋转哪天走偏成两个数。 */
+  function rotFlat3(K, p) {
+    const Kt = [K[0], K[3], K[6], K[1], K[4], K[7], K[2], K[5], K[8]];   // Kᵀ
+    return matMul3(matMul3(Kt, p), K);
   }
 
   /* ---------- 时间 ---------- */
@@ -1020,9 +1103,15 @@ A 是固定侧输入，B 是这个任务的输入，NN 是序号（补零到同�
    *   - 其余走 String(v) 的最短往返表示，double 原样还原，不引入二次误差。
    * 这 7 个值都是数字，不可能含逗号/引号，无需逐格转义。
    */
-  const EXP_COLS = NEED.concat(['Visible_Count', 'PDOP', 'PRN_label']);
-  function epochCsvText(d, n, counts, pdops, prn) {
-    const out = [EXP_COLS.join(',')];
+  const ACC_KEYS = ['sh', 'sv', 'sve', 'svn', 'svu'];
+  const EXP_COLS = NEED.concat(['Visible_Count', 'PDOP', 'PRN_label',
+                                'PosAccH_m', 'PosAccV_m',
+                                'VelAccE_mps', 'VelAccN_mps', 'VelAccD_mps']);
+  /* acc 为空（调用方没跑精度解算）时表头与数据行都只出 10 列。表头无条件写满
+   * 15 列而数据行只有 10 列会产出参差不齐的 CSV，解析器只能报"某行列数不符"。 */
+  function epochCsvText(d, n, counts, pdops, prn, acc) {
+    const out = [(acc ? EXP_COLS : EXP_COLS.slice(0, 10)).join(',')];
+    const dig = [4, 4, 3, 3, 3];            // 位置 4 位小数(m)，测速 3 位小数(m/s)
     for (let i = 0; i < n; i++) {
       const p = pdops[i], src = [];
       for (let k = 0; k < NEED.length; k++) {
@@ -1030,8 +1119,13 @@ A 是固定侧输入，B 是这个任务的输入，NN 是序号（补零到同�
         src.push(isFinite(v) ? String(v) : '');
       }
       // PRN_label 内含逗号，必须加引号，否则解析器会把整行拆成多列
-      out.push(src.join(',') + ',' + counts[i] + ',' +
-               (isFinite(p) ? p.toFixed(4) : '') + ',"{' + prn[i] + '}"');
+      let line = src.join(',') + ',' + counts[i] + ',' +
+                (isFinite(p) ? p.toFixed(4) : '') + ',"{' + prn[i] + '}"';
+      if (acc) for (let k = 0; k < 5; k++) {
+        const v = acc[ACC_KEYS[k]][i];
+        line += ',' + (isFinite(v) ? v.toFixed(dig[k]) : '');
+      }
+      out.push(line);
     }
     return out;
   }
@@ -1162,9 +1256,13 @@ A 是固定侧输入，B 是这个任务的输入，NN 是序号（补零到同�
    * 第 2 条以前漏了：轨迹 roll 到 ±54°，天线法线最低只到仰角 35.6°，
    * 于是掩角 0°/15° 时分别有 5.6% / 0.47% 的"可视星"其实位于地平线以下，
    * 在星空图上就是跑到外圈之外的点。地球挡着的时候天线朝哪都没用。 */
-  function solveAll(los, nsat, nEp, satIdx, maskDeg, counts, pdops, upRow) {
+  /* trace 是**必填**的：PDOP 是 ENU 水平量，而法方程在机体系解，缺了姿态就没有
+   * 参考系可言。历史上这里不接 trace，等于默认天线面板始终水平 —— 姿态一大
+   * 结果就整体偏掉而外部毫无察觉（见 pdopFromQ 的注释）。 */
+  function solveAll(los, nsat, nEp, satIdx, maskDeg, counts, pdops, upRow, trace) {
     const thr = Math.sin(maskDeg * D2R);
     const Q = new Float64Array(16);
+    const d = trace ? trace.data : null;
     for (let e = 0; e < nEp; e++) {
       Q.fill(0);
       const base = e * nsat * 3;
@@ -1184,8 +1282,361 @@ A 是固定侧输入，B 是这个任务的输入，NN 是序号（补零到同�
         Q[12] += z;    Q[13] += z*x; Q[14] += z*y; Q[15] += z*z;
       }
       counts[e] = n;
-      pdops[e] = (n < 4) ? NaN : pdopFromQ(Q);
+      pdops[e] = (n < 4) ? NaN
+        : pdopFromQ(Q, dcmEnuToBody(d.Yaw[e], d.Pitch[e], d.Roll[e]));
     }
+  }
+
+  /* ============================================================================
+   * 定位精度仿真（单频多星座 SPS 接收机）
+   *
+   * solveAll 给的是**纯几何**因子：等权假设下没有一颗星比另一颗更差。
+   * 真实接收机给每颗星的 σ 不同（对流层随仰角、电离层随仰角与方位、多路径、
+   * 星座各自的星历误差），所以要按 1/σ² 加权重解一次，才能得到实际的
+   * 1σ 定位/测速精度。
+   *
+   * 两处**必须**与直觉相反，否则结果会差一个量级：
+   *
+   * 1) 设计矩阵的行是**单位视线矢量** [bx,by,bz,1]，不是除以距离的版本。
+   *    matInv4 的主元门限 `best < 1e-14` 是**绝对值**；行若除以 ρ≈2×10⁷，
+   *    位置块降到 1e-16 量级，每个历元都被静默判成病态返回 null。
+   *    los 里存的本来就是单位矢量（buildLOSChunk 的 /rho 就是归一化本身）。
+   *
+   * 2) 权重要再除以 wmax² 归一化，求逆后乘回 1/wmax² 还原，
+   *    否则 σ 落在 [1,10] 时 A 的元素能到 1e6，虽然不触发门限但白白损失精度。
+   *
+   * 位置用**加权**矩阵，测速用**无权**矩阵：多普勒噪声在卫星间近似共模，
+   * 按距离 σ 加权没有物理意义，实测会让 σ_ve 虚高 60 倍。
+   * ========================================================================== */
+
+  /* 误差预算常数（1σ，米 / 米每秒）。数值取单频 SPS 接收机的常规量级。 */
+  const ERR = {
+    th: 0.3,        // 接收机热噪声，C/A 一个码片 RMS
+    clk: 0.5,       // 卫星钟差残差（相对论改正已在广播电文内）
+    trop: 0.5,      // 对流层**残差**：Saastamoinen + 标准大气消掉绝大部分
+    ion: 0.4,       // 电离层**残差系数**：Klobuchar 消掉约 60%，剩下约 0.4 倍
+    mp0: 0.3, mpA: 3, mpK: 10,   // 多路径 σ_mp = mp0 + mpA·exp(-(el-5)/mpK)
+    pcv: 0.5,       // 天线相位中心变化
+    doppler: 0.12   // 载波多普勒测速噪声 (m/s)
+  };
+
+  /* 广播星历的**差分轨道误差**（1σ，米）。
+   *
+   * 不要拿 eph_probe.js 报的 13.2 m(GPS) / 135.8 m(QZSS) 来填：那是「同星
+   * 相邻电文互推的差值」，被钟差多项式主导（每条电文的 a0 相对各自的 toc），
+   * 尾部还混着记录边界的垃圾值（样本里 BDS 最大 1.3×10⁷ m）。当作各星独立的
+   * 位置噪声喂进去，σ_h 会虚高约 10 倍。这里用广播星历的规格量级。 */
+  const EPH_SIGMA = { G: 1.5, C: 2.5, E: 1.5, J: 1.5, I: 2.0, R: 3, S: 3 };
+
+  /* 各星座的系统时相对 GPS 时的偏移，用于 Klobuchar 的当日秒数 t。
+   * 北斗用 BDT，按定义比 GPS 时慢 14 s；样本头部的 BDUT 电文同样给 14。
+   * QZSS/IRNSS 与 GPS 的钟差在亚微秒量级，对电离层延迟可忽略。 */
+  const SYS_TIME_OFF = { C: -14 };
+
+  /* Klobuchar 电离层延迟，按 RTKLIB src/rtkcmn.c 的 ionmodel() 形式实现。
+   * **直接返回米** —— RTKLIB 那份已经乘过 CLIGHT 和映射函数 f，别再乘一次。
+   * alpha/beta 各 4 个系数；缺任一半就返回 0（没有改正 ≠ 零误差，交由 σ_iono 兜）。 */
+  function klobucharDelay(t, lat, lon, az, el, alpha, beta) {
+    if (!alpha || !beta || alpha.length < 4 || beta.length < 4) return 0;
+    const psi = 0.0137 / (el / Math.PI + 0.11) - 0.022;
+    let phi = lat / Math.PI + psi * Math.cos(az);
+    phi = Math.min(0.416, Math.max(-0.416, phi));
+    const lam = lon / Math.PI + psi * Math.sin(az) / Math.cos(phi * Math.PI);
+    phi += 0.064 * Math.cos((lam - 1.617) * Math.PI);
+    // t 必须是该系统时下的**当日秒数**，不是绝对 GPS 秒
+    let tt = 43200 * lam + t;
+    tt -= Math.floor(tt / 86400) * 86400;
+    const f = 1 + 16 * Math.pow(0.53 - el / Math.PI, 3);
+    let amp = alpha[0] + phi * (alpha[1] + phi * (alpha[2] + phi * alpha[3]));
+    amp = amp < 0 ? 0 : amp;
+    let per = beta[0] + phi * (beta[1] + phi * (beta[2] + phi * beta[3]));
+    per = per < 72000 ? 72000 : per;
+    const x = 2 * Math.PI * (tt - 50400) / per;
+    return CLIGHT * f * (Math.abs(x) < 1.57
+      ? 5e-9 + amp * (1 + x * x * (-0.5 + x * x / 24))
+      : 5e-9);
+  }
+
+  /* RINEX 电离层标签前缀：星座代号 ≠ 标签前缀（GPS→GPSA、北斗→BDSA、
+   * QZSS→QZSA、NavIC→IRNA）。GLONASS / SBAS 不广播 Klobuchar。 */
+  const ION_TAG = { G: 'GPS', C: 'BDS', J: 'QZS', I: 'IRN' };
+
+  /* 取某星座的 Klobuchar 系数。
+   * **Galileo 没有 Klobuchar** —— 样本里 GAL 只有 3 个系数（Nequick 形式，
+   * 1.2100e+02 / 6.2500e-02 / 6.1035e-05），直接套进去会得到毫无意义的结果。
+   * 这里退回 GPS 的 α/β：两者描述的是同一片 F 区，日变化量级相近，
+   * 近似是可控的（已在 README 标注）。 */
+  function ionFor(sys, ion) {
+    if (!ion) return null;
+    const p = sys === 'E' ? 'GPS' : ION_TAG[sys];       // Galileo 借 GPS
+    if (!p) return null;
+    const a = ion[p + 'A'], b = ion[p + 'B'];
+    return (a && b && a.length >= 4 && b.length >= 4) ? { a, b } : null;
+  }
+
+  /* Saastamoinen 对流层**总延迟**（米）。sin 下限取 3°，否则低仰角处 1/sin 发散。 */
+  function saastamoinen(el, hKm) {
+    const h = Math.min(Math.max(hKm, 0), 20);
+    const t = (0.0022768 * 1013.25 / (1 - 0.00266 + 0.00028 * h) + 0.0023) /
+              Math.sin(Math.max(el, 3 * D2R));
+    return t;
+  }
+
+  /* 逐 (历元,星) 的伪距 1σ（米）。**只依赖仰角、方位与时刻**，与掩角和星座
+   * 选择无关 —— 所以在 LOS 推算那趟里算一次存起来，之后改掩角/切星座只需
+   * 重做矩阵累加，不必重算 Klobuchar（那是整条链里唯一贵的部分）。
+   * 不可用的 (历元,星) 写 0。 */
+  function buildSigmaChunk(rinex, trace, t0Gps, i0, i1, los, nsat, sig, satSys) {
+    const d = trace.data, head = rinex.header || {};
+    for (let e = i0; e < i1; e++) {
+      const t = t0Gps + d.Time[e];
+      const lat = d.Latitude[e] * D2R, lon = d.Longitude[e] * D2R;
+      const hKm = d.Height[e] / 1000;
+      const K = dcmEnuToBody(d.Yaw[e], d.Pitch[e], d.Roll[e]);
+      const u0 = K[2], u1 = K[5], u2 = K[8];
+      const base = e * nsat;
+      for (let s = 0; s < nsat; s++) {
+        const o = e * nsat * 3 + s * 3;
+        const bx = los[o], by = los[o + 1], bz = los[o + 2];
+        if (bz === 0 && bx === 0 && by === 0) { sig[base + s] = 0; continue; }
+        const sinEl = u0 * bx + u1 * by + u2 * bz;
+        if (sinEl <= 0) { sig[base + s] = 0; continue; }     // 地平线以下
+        const el = Math.asin(Math.min(1, sinEl));
+        const az = Math.atan2(K[0] * bx + K[3] * by + K[6] * bz,
+                              K[1] * bx + K[4] * by + K[7] * bz);
+        const elDeg = el * R2D;
+        const sys = satSys ? satSys[s] : '';
+        const io = ionFor(sys, head.ion);
+        const ionR = io ? ERR.ion * klobucharDelay(t + (SYS_TIME_OFF[sys] || 0),
+                                                  lat, lon, az, el, io.a, io.b) : 0;
+        const mp = ERR.mp0 + ERR.mpA * Math.exp(-(elDeg - 5) / ERR.mpK);
+        /* 用 `??` 不用 `||`：`eph || 3` 会把合法的 σ_eph = 0 变成 3 m。
+         * 这在做敏感度分析（"去掉星历误差看还剩多少"）时是个静默陷阱 ——
+         * σ_h 反而变大，结论完全颠倒，却不报任何错。 */
+        const eph = EPH_SIGMA[sys] ?? 3;
+        // trop 与 pcv 是**残差**（改正后的剩余量），不是被改正掉的总量
+        const v = ERR.th * ERR.th + mp * mp + ERR.pcv * ERR.pcv + ERR.trop * ERR.trop +
+                  ionR * ionR + ERR.clk * ERR.clk + eph * eph;
+        sig[base + s] = Math.sqrt(v);
+      }
+    }
+  }
+
+  /* 由缓存的 σ 与 LOS 重解定位/测速精度。掩角或星座变化时反复调用，故只做
+   * 矩阵累加与求逆，不含三角函数。out 需含 sh/sv/sve/svn/svu 五个 nEp 长数组。 */
+  function accuracySolve(trace, los, nsat, satIdx, upRow, sig, maskDeg, out, nEp) {
+    const thr = Math.sin(maskDeg * D2R), sd = ERR.doppler, d = trace.data;
+    const Aw = new Float64Array(16), A0 = new Float64Array(16);
+    for (let e = 0; e < nEp; e++) {
+      const base = e * nsat * 3, sbase = e * nsat;
+      const u0 = upRow[e * 3], u1 = upRow[e * 3 + 1], u2 = upRow[e * 3 + 2];
+      Aw.fill(0); A0.fill(0);
+      let n = 0, wmax = 0;
+      for (let k = 0; k < satIdx.length; k++) {
+        const s = satIdx[k], o = base + s * 3, z = los[o + 2];
+        if (z <= thr) continue;
+        const x = los[o], y = los[o + 1];
+        if (u0 * x + u1 * y + u2 * z <= 0) continue;       // 地平线以下：地球遮挡
+        const sg = sig[sbase + s];
+        if (!(sg > 0)) continue;
+        const w = 1 / sg;
+        if (w > wmax) wmax = w;
+        n++;
+        /* 位置设计矩阵行 = [1, bx, by, bz]，**未知量顺序与 solveAll 一致：
+         * [钟差, x, y, z]**。位置块因此是右下 3×3（下标 1..3）而不是左上角。
+         * 这里照抄 solveAll 的通式而不手展开，就是为了不重复那处「顺序必须
+         * 逐字相同」的坑 —— 手展开过一次，位置块读成了钟差行，σ_v 比 σ_h 还小。
+         * A0 另作处理，见下。 */
+        const lw = w * w;
+        for (let i = 0; i < 4; i++) {
+          const hi = i === 0 ? 1 : (i === 1 ? x : i === 2 ? y : z);
+          const r = i * 4;
+          Aw[r]     += lw * hi;         Aw[r + 1] += lw * hi * x;
+          Aw[r + 2] += lw * hi * y;    Aw[r + 3] += lw * hi * z;
+        }
+        /* 测速的 A0 **不能照抄位置**：多普勒对接收机钟差与位置的偏导都是 0，
+         * 未知量只有 [vE,vN,vU]，法方程是纯 3×3 M = Σ u uᵀ。若照样累出一行
+         * [1,bx,by,bz]，那个凭空多出来的钟差未知量会让 M⁻¹ 的右下块 ≠ M⁻¹，
+         * 测速 DOP 被系统性放大 —— 实测 σ_vu 0.026 → 0.087 m/s（3.4×），
+         * 而且放大幅度随姿态变化，看起来像是「垂向本来就差」的假象。
+         * 这里保留 A0[0]=1 作占位让 matInv4 可用，其余元只填右下 3×3。 */
+        A0[0] = 1;                                 // 占位，与速度解耦，仅供 matInv4
+        A0[5]  += x * x; A0[6]  += x * y; A0[7]  += x * z;
+        A0[9]  += y * x; A0[10] += y * y; A0[11] += y * z;
+        A0[13] += z * x; A0[14] += z * y; A0[15] += z * z;
+      }
+      if (n < 4) { blank(out, e); continue; }
+      // 求逆前把权除以 wmax²、之后乘回 1/wmax²，令 A 恒在 O(1) 附近
+      const inv = 1 / (wmax * wmax);
+      const Qw = matInv4(m4(Aw, inv)), Q0 = matInv4(m4(A0, 1));
+      if (!Qw || !Q0) { blank(out, e); continue; }
+      /* 机体系协方差 → ENU：Cov_enu = Kᵀ · Cov_body · K（K = ENU→Body，正交） */
+      const K = dcmEnuToBody(d.Yaw[e], d.Pitch[e], d.Roll[e]);
+      const qe = rot3(K, Qw, inv), q0 = rot3(K, Q0, 1);
+      out.sh[e]  = Math.sqrt(Math.max(qe[0] + qe[4] + 2 * qe[3], 0));   // 东+北 合成
+      out.sv[e]  = Math.sqrt(Math.max(qe[8], 0));
+      out.sve[e] = sd * Math.sqrt(Math.max(q0[0], 0));
+      out.svn[e] = sd * Math.sqrt(Math.max(q0[4], 0));
+      out.svu[e] = sd * Math.sqrt(Math.max(q0[8], 0));
+    }
+  }
+  function blank(out, e) {
+    out.sh[e] = NaN; out.sv[e] = NaN; out.sve[e] = NaN; out.svn[e] = NaN; out.svu[e] = NaN;
+  }
+  /* 取 4×4 逆的**右下** 3×3（位置块）并转到 ENU，scale 为求逆前的权归一化因子。
+   * 未知量顺序在本文件里统一是 [钟差, x, y, z]，所以位置块是下标 1..3；
+   * 读左上角会读到钟差那一行，σ_v 会小得离谱。 */
+  function rot3(K, Q, scale) {
+    const p = [Q[1][1] * scale, Q[1][2] * scale, Q[1][3] * scale,
+               Q[2][1] * scale, Q[2][2] * scale, Q[2][3] * scale,
+               Q[3][1] * scale, Q[3][2] * scale, Q[3][3] * scale];
+    return rotFlat3(K, p);
+  }
+
+  /* 把展平的 16 元累加器切成 matInv4 需要的嵌套行；scale 为整体缩放。
+   * 先把权除以 wmax² 再求逆、之后乘回 1/wmax²，是为了让 A 恒在 O(1) 附近，
+   * 既避开 matInv4 的绝对主元门限 1e-14，也少丢几位有效数字。 */
+  function m4(a, scale) {
+    return [[a[0]*scale, a[1]*scale, a[2]*scale, a[3]*scale],
+            [a[4]*scale, a[5]*scale, a[6]*scale, a[7]*scale],
+            [a[8]*scale, a[9]*scale, a[10]*scale, a[11]*scale],
+            [a[12]*scale, a[13]*scale, a[14]*scale, a[15]*scale]];
+  }
+
+  /* ---------- 最小二乘蒙特卡洛（验证用） ----------
+   *
+   * 确定性 σ 走的是「在真值处线性化」的路子：它给的是**理论** 1σ。
+   * 这里真的造观测、真的解一次：给每颗星的伪距加 N(0, σ²) 噪声，解 4 参数
+   * 单点定位 [x,y,z,钟差]，取解与真值之差的 ENU 分量，累积 RMS。
+   * 两者应当落在同一量级 —— 这是整条误差预算自洽与否的关键检查：
+   * 只要 UERE 各项配错，MC 就不会跟着一起错，它会暴露出来。
+   *
+   * 观测方程在 20 000 km 基线上是非线性的，但几米的扰动在一阶上等价于
+   * 线性系统，故**一次线性最小二乘就是收敛解**，不必跑高斯-牛顿迭代。
+   * 测速同理：多普勒对接收机速度的偏导就是视线单位矢量。
+   *
+   * PRNG 固定种子 —— 结果必须可复现，否则没法进测试基线。
+   */
+  function mulberry32(a) {
+    return function () {
+      a |= 0; a = a + 0x6D2B79F5 | 0;
+      let t = Math.imul(a ^ a >>> 15, 1 | a);
+      t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+      return ((t ^ t >>> 14) >>> 0) / 4294967296;
+    };
+  }
+
+  /* out 需含 sh/sv/sve/svn/svu 五个累加器（存平方和）；返回参与统计的历元数。 */
+  function accuracyMC(rinex, trace, t0Gps, los, nsat, satIdx, upRow, sig, maskDeg,
+                      out, step, trials, seed) {
+    const thr = Math.sin(maskDeg * D2R), sd = ERR.doppler, d = trace.data;
+    const rnd = mulberry32(seed || 12345);
+    // Box-Muller：一次出两个标准正态，缓存一个
+    let spare = null;
+    function randn() {
+      if (spare !== null) { const v = spare; spare = null; return v; }
+      let u = 0, v = 0, s2 = 0;
+      do { u = rnd() * 2 - 1; v = rnd() * 2 - 1; s2 = u * u + v * v; } while (s2 >= 1 || s2 === 0);
+      const f = Math.sqrt(-2 * Math.log(s2) / s2);
+      spare = v * f;
+      return u * f;
+    }
+    const Sats = rinex.sats;      // 与 los 的卫星下标同序（UI 里的 idx 就是这么建的）
+    let used = 0;
+    for (let e = 0; e < trace.n; e += step) {
+      const t = t0Gps + d.Time[e];
+      const K = dcmEnuToBody(d.Yaw[e], d.Pitch[e], d.Roll[e]);
+      const Kt = [K[0], K[3], K[6], K[1], K[4], K[7], K[2], K[5], K[8]];
+      const rcv = llhToEcef(d.Latitude[e], d.Longitude[e], d.Height[e]);
+      const base = e * nsat * 3, sbase = e * nsat;
+      const u0 = upRow[e * 3], u1 = upRow[e * 3 + 1], u2 = upRow[e * 3 + 2];
+      // 先定出参与解算的星（掩角 + 地平线），星历也只取一次供各次抽样共用
+      const use = [];
+      for (let k = 0; k < satIdx.length; k++) {
+        const s = satIdx[k], o = base + s * 3, z = los[o + 2];
+        if (z <= thr) continue;
+        const x = los[o], y = los[o + 1];
+        if (u0 * x + u1 * y + u2 * z <= 0) continue;
+        const sg = sig[sbase + s];
+        if (!(sg > 0)) continue;
+        const sat = Sats[s];
+        if (!sat) continue;
+        use.push({ x, y, z, sg, sys: sat.sys, rec: selectEph(sat, t, EPH_MAX_AGE) });
+      }
+      if (use.length < 4) continue;
+      for (let r = 0; r < trials; r++) {
+        const A = new Float64Array(16), rhs = new Float64Array(4);
+        const A0 = new Float64Array(16), rhs0 = new Float64Array(4);
+        let wmax = 0, ok = true;
+        for (let k = 0; k < use.length; k++) {
+          const u = use[k];
+          if (!u.rec) { ok = false; break; }
+          const p = propagate(u.sys, u.rec, t);
+          const v = enuFromEcef(p[0] - rcv[0], p[1] - rcv[1], p[2] - rcv[2],
+                                d.Longitude[e], d.Latitude[e]);
+          if (!v) { ok = false; break; }
+          // 观测残差：伪距误差；测速残差用同一个 σ 体系下的多普勒误差
+          const ep = u.sg * randn(), ev = sd * randn();
+          const w = 1 / u.sg;
+          if (w > wmax) wmax = w;
+          const lw = w * w;
+          /* 位置法方程累加满四行 [1,x,y,z]。只写第 0 行会得到一个**奇异**矩阵
+           * （后 12 个元恒为 0），matInv4 每次返回 null，于是每次抽样都被丢掉、
+           * 统计全零，而外面看不出任何报错。 */
+          for (let i = 0; i < 4; i++) {
+            const hi = i === 0 ? 1 : (i === 1 ? u.x : i === 2 ? u.y : u.z);
+            const r = i * 4;
+            A[r] += lw * hi;          A[r + 1] += lw * hi * u.x;
+            A[r + 2] += lw * hi * u.y; A[r + 3] += lw * hi * u.z;
+            rhs[i] += lw * hi * ep;
+          }
+          /* 测速：多普勒对接收机**位置**与**钟差**的偏导都是 0，对速度的偏导
+           * 就是视线单位矢量，所以法方程是纯粹的 3×3 [vE,vN,vU]。
+           * 第 0 行/列填个与速度解耦的占位，只为让 matInv4 可用；
+           * 若照位置那样把第 0 列填 1，钟差会凭空吃掉一部分多普勒残差。 */
+          A0[0] = 1;
+          A0[5]  += u.x * u.x; A0[6]  += u.x * u.y; A0[7]  += u.x * u.z;
+          A0[9]  += u.y * u.x; A0[10] += u.y * u.y; A0[11] += u.y * u.z;
+          A0[13] += u.z * u.x; A0[14] += u.z * u.y; A0[15] += u.z * u.z;
+          rhs0[1] += ev * u.x; rhs0[2] += ev * u.y; rhs0[3] += ev * u.z;
+        }
+        if (!ok) continue;
+        const inv = 1 / (wmax * wmax);
+        const Q = matInv4(m4(A, inv)), Q0 = matInv4(m4(A0, 1));
+        if (!Q || !Q0) continue;
+        /* 位置解取法方程解的 [x,y,z] 分量。**必须把钟差列 rhs[0] 也乘进去**：
+         * 设计矩阵里未知量 0 是钟差，(AᵀWA)⁻¹ 的第 i 行第 0 列并不为零，丢掉它
+         * 得到的不是位置估计的子向量。漏掉的后果很隐蔽：方差公式
+         * Cov(Δx) = (AᵀWA)⁻¹ 只在**全 4 列**求和时才成立，截断后 MC 的 RMS
+         * 与确定性 σ 差 3~4 倍（实测 σ_v 2.34 → 9.8 m），而低权卫星恰恰
+         * 在钟差列上贡献最大，所以偏差不是常数、随几何变化。 */
+        const dp = [0, 0, 0];
+        for (let i = 0; i < 3; i++)
+          dp[i] = (Q[i + 1][0]*rhs[0] + Q[i + 1][1]*rhs[1] +
+                   Q[i + 1][2]*rhs[2] + Q[i + 1][3]*rhs[3]) * inv;
+        const pe = [0, 0, 0];                                   // 机体系 → ENU
+        for (let i = 0; i < 3; i++)
+          pe[i] = Kt[i * 3] * dp[0] + Kt[i * 3 + 1] * dp[1] + Kt[i * 3 + 2] * dp[2];
+        out.sh += pe[0] * pe[0] + pe[1] * pe[1];
+        out.sv += pe[2] * pe[2];
+        /* 测速：A0 是块对角的（(0,0)=1 与速度解耦），故 rhs0[0] 恒为 0，
+         * 求出的 dv 就是纯 3×3 解，**但仍是机体系**——多普勒偏导用的是 los 里
+         * 的机体系视线矢量。必须再转一次才能与 ENU 的 σ_ve/vn/vu 对齐，
+         * 否则报出去的其实是机体系 X（航向）与 Z（天顶）分量。 */
+        const dv = [
+          Q0[1][1]*rhs0[1] + Q0[1][2]*rhs0[2] + Q0[1][3]*rhs0[3],
+          Q0[2][1]*rhs0[1] + Q0[2][2]*rhs0[2] + Q0[2][3]*rhs0[3],
+          Q0[3][1]*rhs0[1] + Q0[3][2]*rhs0[2] + Q0[3][3]*rhs0[3]];
+        const ve = [0, 0, 0];                                   // 机体系 → ENU
+        for (let i = 0; i < 3; i++)
+          ve[i] = Kt[i * 3] * dv[0] + Kt[i * 3 + 1] * dv[1] + Kt[i * 3 + 2] * dv[2];
+        out.sve += ve[0] * ve[0];
+        out.svn += ve[1] * ve[1];
+        out.svu += ve[2] * ve[2];
+        used++;
+      }
+    }
+    return used;
   }
 
   /* ---------- 自检 ---------- */
@@ -1549,6 +2000,37 @@ A 是固定侧输入，B 是这个任务的输入，NN 是序号（补零到同�
     };
   }
 
+  /* 5 个精度量的分位数统计。分位数用**插值法**而不是取最近秩：
+   * 5%/95% 常常落在样本之间（例如 5000 个历元里第 250 个），取整会把
+   * 分位数换成 min/max，看起来会平白多出一条毛刺。 */
+  function quantiles(v, n) {
+    if (!n) return null;
+    const a = Array.prototype.slice.call(v, 0, n).sort((x, y) => x - y);
+    const at = p => {
+      const i = p * (n - 1), lo = Math.floor(i), hi = Math.min(n - 1, lo + 1);
+      return a[lo] + (a[hi] - a[lo]) * (i - lo);
+    };
+    return { p5: at(0.05), med: at(0.5), p95: at(0.95), min: a[0], max: a[n - 1] };
+  }
+
+  /* acc = {sh,sv,sve,svn,svu}，每个是长度 nEp 的 Float64Array，不可解历元为 NaN。
+   * NaN 与 PDOP 一样必须**跳过**而不是当 0 —— 否则中位会被大量 0 拉下来，
+   * 报出来的“精度 0.000 m”在物理上是荒谬的。 */
+  function accStats(acc, nEp) {
+    const out = {};
+    for (const k of ACC_KEYS) {
+      const v = new Float64Array(nEp);
+      let m = 0;
+      for (let e = 0; e < nEp; e++) {
+        const x = acc[k] ? acc[k][e] : NaN;
+        if (isFinite(x)) { v[m++] = x; }
+      }
+      out[k] = quantiles(v, m);
+      out[k].nan = 1 - m / nEp;
+    }
+    return out;
+  }
+
   /* 轨迹的时间网格特征 —— 模式 2 的「逐历元可比性」就靠它判断。
    * 网格一致（首值、步长、长度都相同）才允许按历元序号对齐做 Δ。 */
   function timeGrid(trace) {
@@ -1644,6 +2126,9 @@ A 是固定侧输入，B 是这个任务的输入，NN 是序号（补零到同�
     parseRinex, parseTraceCSV, selectEph, propagate, llhToEcef, matMul3, enuFromEcef,
     detectColumns, parseTraceRows, parseTraceTable, splitCSVRows, sniffDelim, normHead, NEED,
     dcmEnuToBody, pdopFromQ, buildLOSChunk, attUpRow, solveAll, selfTest, matInv4,
+    ERR, EPH_SIGMA, klobucharDelay, saastamoinen, ionFor,
+    buildSigmaChunk, accuracySolve, accuracyMC, mulberry32, ACC_KEYS,
+    accStats, quantiles,
     utcToGpsSec, gpsSecToUTC,
     rinexSpan, dayTally, anchorFor, coverState, runStats, timeGrid, gridMatch,
     fileStem, safeName, taskCsvName, csvCell, EXP_COLS, epochCsvText, prnLabels
@@ -1665,6 +2150,7 @@ A 是固定侧输入，B 是这个任务的输入，NN 是序号（补零到同�
     rinex: null, trace: null,
     los: null, nSat: 0, satSys: null,
     counts: null, pdops: null,
+    sig: null, acc: null,
     t0Gps: 0, mask: 15,
     sys: new Set(C.SYS_ORDER),
     busy: false,
@@ -1969,6 +2455,11 @@ A 是固定侧输入，B 是这个任务的输入，NN 是序号（补零到同�
     S.counts = new Int32Array(nEp);
     S.pdops = new Float64Array(nEp);
     S.valid = new Int32Array(nEp);         // 每历元成功取到星历的卫星数
+    /* 逐 (历元,星) 的伪距 1σ。与掩角、星座选择无关，所以只在这里推算一次；
+     * 之后拖掩角/切星座只重做矩阵累加，不重算 Klobuchar。 */
+    S.sig = new Float32Array(nEp * S.nSat);
+    S.acc = {};
+    C.ACC_KEYS.forEach(k => { S.acc[k] = new Float64Array(nEp); });
 
     const bar = $('prog');
     bar.classList.add('on');
@@ -1981,6 +2472,7 @@ A 是固定侧输入，B 是这个任务的输入，NN 是序号（补零到同�
     function step() {
       const j = Math.min(nEp, i + CHUNK);
       C.buildLOSChunk(S.rinex, S.trace, S.t0Gps, i, j, S.los, S.satSys, S.nSat, C.EPH_MAX_AGE, S.valid);
+      C.buildSigmaChunk(S.rinex, S.trace, S.t0Gps, i, j, S.los, S.nSat, S.sig, S.satSys);
       i = j;
       fill.style.width = (100 * i / nEp).toFixed(1) + '%';
       if (i < nEp) { requestAnimationFrame(step); return; }
@@ -2002,6 +2494,7 @@ A 是固定侧输入，B 是这个任务的输入，NN 是序号（补零到同�
       $('bRun').disabled = false;
       $('bExp').disabled = false;
       $('bSelf').disabled = false;
+      $('bMc').disabled = false;
     }
     requestAnimationFrame(step);
   }
@@ -2013,9 +2506,12 @@ A 是固定侧输入，B 是这个任务的输入，NN 是序号（补零到同�
     const t0 = performance.now();
     const idx = [];
     for (let s = 0; s < S.nSat; s++) if (S.sys.has(S.satSys[s])) idx.push(s);
-    C.solveAll(S.los, S.nSat, S.trace.n, idx, S.mask, S.counts, S.pdops, S.upRow);
+    C.solveAll(S.los, S.nSat, S.trace.n, idx, S.mask, S.counts, S.pdops, S.upRow, S.trace);
+    C.accuracySolve(S.trace, S.los, S.nSat, idx, S.upRow, S.sig, S.mask, S.acc, S.trace.n);
     S.lastMs = performance.now() - t0;
     S.lastN = idx.length;
+    S.accStat = null;      // 掩角/星座变了，分位数缓存必须作废
+    S.accMc = null;        // 同理：MC 是按旧掩角/旧星座抽的样，不能继续显示
     updateStats();
     drawAll();
   }
@@ -2093,7 +2589,75 @@ A 是固定侧输入，B 是这个任务的输入，NN 是序号（补零到同�
         if (el) el.textContent = per[s] ? per[s] + ' 颗' : '—';
       });
     }
+
+    updateAccPanel();
   }
+
+  /* ---------------- 精度面板 ----------------
+   * 数值格式按量级自适应，但**同一行里必须一致**：σ_ve=0.0329 与 σ_h=1.2534
+   * 若各按自己的最优位数输出，读者会误以为测速精度比位置精度更精确。 */
+  function fmtAcc(v, vel) {
+    if (!isFinite(v)) return '—';
+    if (vel) return v < 0.1 ? v.toFixed(4) : v.toFixed(3);
+    return v < 10 ? v.toFixed(3) : v.toFixed(1);
+  }
+
+  const ACC_ROWS = [['sh', 'aSh', false], ['sv', 'aSv', false],
+                   ['sve', 'aSe', true], ['svn', 'aSn', true], ['svu', 'aSu', true]];
+
+  function updateAccPanel() {
+    const n = S.trace ? S.trace.n : 0;
+    if (!n || !S.acc) return;
+    if (!S.accStat || S.accStatN !== n) { S.accStat = C.accStats(S.acc, n); S.accStatN = n; }
+    const st = S.accStat;
+    const e = Math.max(0, Math.min(n - 1, SKY.ep | 0));
+    let nanMax = 0;
+    ACC_ROWS.forEach(([k, id, vel]) => {
+      const q = st[k];
+      const cur = S.acc[k] ? S.acc[k][e] : NaN;
+      $(id).textContent    = fmtAcc(cur, vel);
+      $(id + 'M').textContent = q ? fmtAcc(q.med, vel) : '—';
+      $(id + 'L').textContent = q ? fmtAcc(q.p5,  vel) : '—';
+      $(id + 'H').textContent = q ? fmtAcc(q.p95, vel) : '—';
+      $(id + 'C').textContent = S.accMc ? fmtAcc(S.accMc[k], vel) : '—';
+      nanMax = Math.max(nanMax, q ? q.nan : 1);
+    });
+    const w = $('accWarn');
+    if (nanMax > 0)
+      w.innerHTML = '<span style="color:#b91c1c">▲ ' + (nanMax * 100).toFixed(0) +
+        '% 的历元不可解（可视星 &lt; 4），这些行留空而非填 0</span>';
+    else w.textContent = '';
+  }
+
+  /* MC 是纯 CPU 耗时（默认 200 个历元 × 20 次抽样 ≈ 0.3 s），所以做成按钮而不是
+   * 混进 recompute() —— 掩角滑块每输入一次就跑一次抽样会把滑块拖死。 */
+  $('bMc').addEventListener('click', () => {
+    if (!S.los || !S.rinex || !S.trace) return;
+    const btn = $('bMc'); btn.disabled = true; btn.textContent = '抽样中…';
+    // 让按钮先画出「抽样中」再让出主线程，否则 300 ms 内什么都看不到
+    setTimeout(() => {
+      const idx = [];
+      for (let s = 0; s < S.nSat; s++) if (S.sys.has(S.satSys[s])) idx.push(s);
+      const step = Math.max(1, Math.round(S.trace.n / 200));
+      const acc = { sh: 0, sv: 0, sve: 0, svn: 0, svu: 0 };
+      // accuracyMC 把采样次数当**返回值**给出，不写回 out —— 读 out.used 会永远拿到
+      // undefined，于是除零得到 NaN、面板回退成占位符，而外面一点错都不报。
+      const used = C.accuracyMC(S.rinex, S.trace, S.t0Gps, S.los, S.nSat, idx, S.upRow, S.sig,
+                                S.mask, acc, step, 20, 12345);
+      S.accMc = {};
+      if (used) C.ACC_KEYS.forEach(k => S.accMc[k] = Math.sqrt(acc[k] / used));
+      else S.accMc = null;
+      updateAccPanel();
+      btn.textContent = '抽样交叉验证（MC）';
+      btn.disabled = false;
+      log('MC 抽样 ' + used + ' 次解' +
+          (S.accMc ? '，与确定性 σ 最大偏差 ' +
+             (Math.max(...C.ACC_KEYS.map(k => {
+               const d = S.acc[k] ? S.accStat[k].med : NaN;
+               return isFinite(d) && d ? Math.abs(S.accMc[k] - d) / d : 0;
+             })) * 100).toFixed(1) + '%' : '（没有可解历元）'));
+    }, 30);
+  });
 
   /* =========================================================================
    * Canvas 折线图：devicePixelRatio + min/max 包络抽稀 + 联动十字光标 + 缩放平移
@@ -2938,11 +3502,11 @@ A 是固定侧输入，B 是这个任务的输入，NN 是序号（补零到同�
     const prn = C.prnLabels(S.los, S.nSat, t.n, S.upRow, idx,
                             Math.sin(S.mask * C.D2R), S.rinex.sats.map(s => s.sys + s.prn));
     // 列由映射后的标准名决定，源文件里的其余列（厂商备注、多余实验列…）一律不带
-    const out = C.epochCsvText(t.data, t.n, S.counts, S.pdops, prn);
+    const out = C.epochCsvText(t.data, t.n, S.counts, S.pdops, prn, S.acc);
     const blob = new Blob(['﻿' + out.join('\r\n') + '\r\n'], { type: 'text/csv;charset=utf-8' });
     const sysTag = Array.from(S.sys).sort().join('');
     downloadBlob('gnss_pdop_mask' + S.mask.toFixed(1) + '_' + (sysTag || 'none') + '.csv', blob);
-    log('已导出 ' + t.n + ' 行（标准 ' + C.NEED.length + ' 列 + Visible_Count + PDOP + PRN_label；' +
+    log('已导出 ' + t.n + ' 行 × ' + C.EXP_COLS.length + ' 列（' + C.EXP_COLS.join(' / ') + '；' +
         '源文件其余 ' + t.extra.length + ' 列未导出）', 'g');
   });
 
@@ -3535,10 +4099,14 @@ A 是固定侧输入，B 是这个任务的输入，NN 是序号（补零到同�
     const CHUNK = 250;
     let i = 0;
     const tms = performance.now();
+    const sig = new Float32Array(nEp * nSat);
+    const acc = {};
+    C.ACC_KEYS.forEach(k => { acc[k] = new Float64Array(nEp); });
     function step() {
       if (B.stop) { next(); return; }
       const j = Math.min(nEp, i + CHUNK);
       C.buildLOSChunk(t.rinex, t.trace, t.t0Gps, i, j, los, satSys, nSat, C.EPH_MAX_AGE, valid);
+      C.buildSigmaChunk(t.rinex, t.trace, t.t0Gps, i, j, los, nSat, sig, satSys);
       i = j;
       fill.style.width = (100 * (k + i / nEp) / total).toFixed(1) + '%';
       $('bProgText').textContent = '任务 ' + (k + 1) + '/' + total + '：' + t.name +
@@ -3547,7 +4115,10 @@ A 是固定侧输入，B 是这个任务的输入，NN 是序号（补零到同�
 
       const idx = [];
       for (let s = 0; s < nSat; s++) if (B.sys.has(satSys[s])) idx.push(s);
-      C.solveAll(los, nSat, nEp, idx, B.mask, counts, pdops, upRow);
+      C.solveAll(los, nSat, nEp, idx, B.mask, counts, pdops, upRow, t.trace);
+      /* 精度必须在 LOS 还在手上时算完 —— 下面 push 之后 LOS 就被丢弃了，
+       * 而 σ 的逐星缓存在批量里不随结果留存，所以这里一次算到位。 */
+      C.accuracySolve(t.trace, los, nSat, idx, upRow, sig, B.mask, acc, nEp);
       let vs = 0;
       for (let e = 0; e < nEp; e++) vs += valid[e];
       const drop = 1 - vs / (nEp * nSat);
@@ -3561,7 +4132,7 @@ A 是固定侧输入，B 是这个任务的输入，NN 是序号（补零到同�
         t0Gps: t.t0Gps, t0Utc: C.gpsSecToUTC(t.t0Gps, t.rinex.header.leap),
         grid: t.grid, nEp, nSat, nSel: idx.length,
         mask: B.mask,               // 记下算这批时的掩角，供结果标题标注
-        counts, pdops, upRow, prn,
+        counts, pdops, upRow, prn, acc,
         stats: C.runStats(counts, pdops, nEp, drop),
         cover: t.cover, ms: performance.now() - tms
       });
@@ -3991,7 +4562,7 @@ A 是固定侧输入，B 是这个任务的输入，NN 是序号（补零到同�
    * 任务名、文件名、掩角、起始时刻都不再占列：文件名已经带着 A_on_B_mask<掩角>，
    * 同一批任务又锚定在同一时刻，这些列在一份文件内全是常量。 */
   function runsCsvText(r) {
-    return C.epochCsvText(r.trace.data, r.nEp, r.counts, r.pdops, r.prn);
+    return C.epochCsvText(r.trace.data, r.nEp, r.counts, r.pdops, r.prn, r.acc);
   }
 
   /* ---------- 分任务 ZIP ---------- */

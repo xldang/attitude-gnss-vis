@@ -197,8 +197,11 @@ def dcm(yaw, pitch, roll):
               [[cy, sy, 0], [-sy, cy, 0], [0, 0, 1]])
 
 
-def pdop(Q):
-    """增广 [A|I] 高斯-约当 + 部分主元。原地法会静默退化成单位阵，务必用本式。"""
+def pdop(Q, C):
+    """增广 [A|I] 高斯-约当 + 部分主元。原地法会静默退化成单位阵，务必用本式。
+
+    C 是姿态 DCM（ENU->Body，行 = 机体系轴在 ENU 中的表示）。
+    """
     A = [[0.0] * 8 for _ in range(4)]
     for i in range(4):
         for j in range(4):
@@ -215,7 +218,24 @@ def pdop(Q):
             if r != k:
                 f = A[r][k]
                 A[r] = [A[r][j] - f * A[k][j] for j in range(8)]
-    v = A[0][4] + A[1][5] + A[2][6]
+    # 法方程的未知量顺序是 [钟差, x, y, z]，所以 (HᵀH)⁻¹ 的对角元依次是
+    # 钟差方差、q_xx、q_yy、q_zz。PDOP **不含钟差**。
+    # 早先这里写的是 A[0][4]+A[1][5]+A[2][6]，含了钟差又漏了 q_zz，
+    # 既不是 PDOP 也不是 GDOP，结果系统性偏大约 1.62~1.75 倍。
+    # 若需要 GDOP，是 A[0][4]+A[1][5]+A[2][6]+A[3][7]（四项全取）。
+    #
+    # 参考系：法方程的行是**机体系**视线矢量，所以解出来的位置块也是机体系的，
+    # 而 PDOP 按定义是**当地 ENU 水平**的量。必须 Cov_enu = Cᵀ·Cov_body·C
+    # 转过去再合成。早先直接取机体系 x/y 的对角元，等价于假设天线面板始终水平 ——
+    # 本仓库样本 roll 最大到 54.3°，单历元能差到 88%。
+    # 水平合成取 sqrt(EE + NN + 2·EN)，与 accuracySolve 的 σ_h 同一个式子。
+    P = [[A[1][5], A[1][6], A[1][7]],
+         [A[2][5], A[2][6], A[2][7]],
+         [A[3][5], A[3][6], A[3][7]]]
+    # R = Cᵀ · P · C（行优先展平后复用同一个循环）
+    R = [[sum(C[k][i] * P[k][l] * C[l][j] for k in range(3) for l in range(3))
+          for j in range(3)] for i in range(3)]
+    v = R[0][0] + R[1][1] + 2 * R[0][1]
     return math.sqrt(v) if v > 0 else float("nan")
 
 
@@ -267,7 +287,7 @@ def solve(rows, sats, t0, mask, sel=None):
             Q[4] += xb; Q[5] += xb * xb; Q[6] += xb * yb; Q[7] += xb * zb
             Q[8] += yb; Q[9] += yb * xb; Q[10] += yb * yb; Q[11] += yb * zb
             Q[12] += zb; Q[13] += zb * xb; Q[14] += zb * yb; Q[15] += zb * zb
-        v = pdop(Q) if n >= 4 else float("nan")
+        v = pdop(Q, C) if n >= 4 else float("nan")
         per.append((n, v))
         tot += n
         nmin, nmax = min(nmin, n), max(nmax, n)
