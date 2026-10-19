@@ -228,20 +228,20 @@ rather than overwriting):
 
 | Button | Output |
 |---|---|
-| **Export research data CSV** (single task) | per-epoch, header fixed at 10 columns (below) |
-| **Per-task ZIP** | one zip, **one csv per task**, in exactly the same shape as the single-task export, members named `A_on_B_mask<mask>_<NN>.csv` |
+| **Export research data CSV** (single task) | per-epoch, header fixed at 15 columns (below) |
+| **Per-task ZIP** | one zip: **one csv per task** (in exactly the same shape as the single-task export, members named `A_on_B_mask<mask>_<NN>.csv`) plus **10 comparison-chart pngs** in a `对比图/` subdirectory |
 | Per-epoch CSV (combined) | one long table (`task,t0_utc,epoch,t_rel_s,visible_count,pdop,drop_rate`) with every task concatenated |
 | Summary CSV | one row per task (`task,t0_utc,epochs,mean_visible,...,drop_rate,cover,ms`) |
 
-**The per-epoch csv has a fixed set of 10 columns**, produced by one shared routine for the
+**The per-epoch csv has a fixed set of 15 columns**, produced by one shared routine for the
 single-task export and for every member of the zip:
 
 ```
-Time,Longitude,Latitude,Height,Yaw,Pitch,Roll,Visible_Count,PDOP,PRN_label
+Time,Longitude,Latitude,Height,Yaw,Pitch,Roll,Visible_Count,PDOP,PRN_label,PosAccH_m,PosAccV_m,VelAccE_mps,VelAccN_mps,VelAccD_mps
 ```
 
-The first seven are the **canonical names the mapping resolved to**; the last three are the
-products. Every other column in the source file is left behind — vendor note columns, spare
+The first seven are the **canonical names the mapping resolved to**; the last eight are the
+products (three geometry + five accuracy). Every other column in the source file is left behind — vendor note columns, spare
 experiment columns, odd ordering, Chinese headers — all stay on the input side. Having already
 paid for column detection and mapping, the output should be normalised rather than hand the
 uncontrolled shape of the input downstream. The combined table and the summary table are a
@@ -252,6 +252,36 @@ programmatic downloads, and the browser blocks them from the second one onward (
 attempted to download multiple files"), so it amounts to being unable to export at all. One zip
 triggers one download; unpacked, it is exactly the one-csv-per-task you wanted. Compression uses
 the browser's native `CompressionStream` — no dependency is added.
+
+### The comparison charts in the zip
+
+The `对比图/` subdirectory holds a fixed set of 10 pngs. Each one draws **the whole batch on a
+single feature**, with the trace file's `Time` column as the x-axis — **the same axis in both
+modes**. The legend is drawn **inside** the image: a PNG has no HTML legend to hang off once it
+leaves the browser, and dozens of overlapping curves without one are just a pile of coloured
+blobs.
+
+```
+对比图/
+  01_Visible_Count.png   02_PDOP.png          03_PosAccH_m.png    04_PosAccV_m.png
+  05_VelAccE_mps.png     06_VelAccN_mps.png   07_VelAccD_mps.png
+  08_Yaw.png             09_Pitch.png         10_Roll.png
+```
+
+The two-digit prefix is the reading order: the first seven are the geometry and accuracy
+products, the last three are attitude.
+
+**When the attitude charts collapse to a single curve**: whenever the batch contains only **one
+trajectory**. Mode ① (one fixed trace × many ephemerides) always qualifies — attitude rides along
+with the trace and is unaffected by which ephemeris is paired with it, so N identical overlapping
+curves would be pure noise. Mode ② normally draws one curve per trace; it only collapses when the
+traces are in fact one and the same, which is a statement about **object identity**: pick the same
+file twice and `PARSE_CACHE` returns the same object. The test is therefore "are these the same
+trace object" rather than `mode === 1` — the rule follows the facts, not the mode number.
+
+Curve opacity steps down with the number of curves (≤6 at 0.85, ≤20 at 0.6, beyond that 0.35),
+otherwise a hundred lines turn into mush. The pngs are stored uncompressed in the zip: their IDAT
+is already DEFLATE, so a second pass can only make them bigger.
 
 The **naming rule** is one rule for both modes: `A_on_B_mask<mask>_<NN>.csv`, where **A is the
 fixed-side input and B is this task's input** (mode ① A=trace, B=ephemeris; mode ② the reverse).

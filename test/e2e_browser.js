@@ -1451,6 +1451,14 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     await sleep(200);
     chk('对比曲线下纵轴切换按钮可见', await evalJS(
       'document.getElementById("bScale").style.display !== "none"'));
+    /* 横轴换成轨迹的 Time 之后，得确认曲线真的落在绘图区里。曾经踩过的坑是
+     * 映射按 cv.clientWidth 算 —— 离屏时恒为 0，刻度与曲线一起跑到画布外，
+     * 而这种失败**不抛异常**：面板照样渲染，只是空的。查像素是唯一抓得住的办法。 */
+    const inked = await evalJS('(()=>{const c=document.getElementById("b1");' +
+      'if(!c)return null;const g=c.getContext("2d");' +
+      'const d=g.getImageData(0,0,c.width,c.height).data;let n=0;' +
+      'for(let i=3;i<d.length;i+=4) if(d[i]>0) n++; return n;})()');
+    chk('对比曲线真的画在了画布上（横轴映射没跑出画布）', inked > 1000, '不透明像素 ' + inked);
     // Δ 口径：每条序列减去基准；基准与自身的差必然逐点为 0
     const dNote = await evalJS('document.getElementById("bNote").textContent');
     chk('默认纵轴口径为 Δ 基线', dNote.includes('本任务可视星数'), dNote.slice(0, 30));
@@ -1623,7 +1631,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
       if (e >= 0) {
         const nEnt = buf.readUInt16LE(e + 10), cdOff = buf.readUInt32LE(e + 16),
               cdSz = buf.readUInt32LE(e + 12);
-        chk('EOCD 条目数 = 2', nEnt === 2, nEnt + '');
+        chk('EOCD 条目数 = 2 份 CSV + 10 张对比图', nEnt === 12, nEnt + '');
         chk('中央目录紧贴 EOCD', cdOff + cdSz === e, (cdOff + cdSz) + ' vs ' + e);
         let p = cdOff;
         for (let i = 0; i < nEnt; i++) {
@@ -1649,17 +1657,100 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
           try { data = ent.method === 8 ? zlib.inflateRawSync(raw) : raw; }
           catch (err) { chk('成员可解压', false, ent.name + ' ' + err.message); break; }
           ent.text = data.toString('utf8');
+          /* raw 是**原始字节**。ent.text 是 utf8 解码结果，二进制成员用它做断言
+           * 会把 0x89 0x8E 这类字节吃成替换字符 —— PNG magic 必须看 raw。 */
+          ent.raw = data;
           chk('解压后长度 = usize', data.length === ent.usize,
               ent.name + ' ' + data.length + ' vs ' + ent.usize);
           chk('CRC 与 Node zlib.crc32 一致（独立预言机）',
               (zlib.crc32(data) >>> 0) === (ent.crc >>> 0), ent.name);
-          chk('成员带 BOM（Excel 才会按 UTF-8 打开中文）',
-              ent.text.charCodeAt(0) === 0xFEFF, ent.name);
+          // BOM 只对 csv 成立：PNG 前面多 3 个字节就是废图（见下面 PNG 段）
+          if (ent.name.endsWith('.csv')) {
+            chk('成员带 BOM（Excel 才会按 UTF-8 打开中文）',
+                ent.text.charCodeAt(0) === 0xFEFF, ent.name);
+          }
           ENT.push(ent);
           p += 46 + nl + el + cl;
         }
       }
-      chk('ZIP 里有 2 个成员', ENT.length === 2, ENT.map(x => x.name).join(' | '));
+      chk('ZIP 里有 12 个成员', ENT.length === 12, ENT.map(x => x.name).join(' | '));
+
+      /* PNG 成员走的是「二进制原样入库」这条路：BOM 绝不能加（加在 PNG 前面
+       * 会让每一张图都打不开），也不该再压一遍（IDAT 本身已是 DEFLATE）。
+       * 所以 CSV 与 PNG 的断言必须分开 —— 用「全部成员都该有 BOM」一条
+       * 包打天下时，图坏了反而看不出来。 */
+      const CSV_ENT = ENT.filter(x => x.name.endsWith('.csv'));
+      const PNG_ENT = ENT.filter(x => x.name.endsWith('.png'));
+      chk('成员分成 2 份 CSV + 10 张 PNG',
+          CSV_ENT.length === 2 && PNG_ENT.length === 10,
+          CSV_ENT.length + ' csv / ' + PNG_ENT.length + ' png');
+
+      /* 10 个图名逐一核对。序号前缀是阅读顺序，必须与 CMP_FIELDS 同序 ——
+       * 顺序错了图还在，只是读起来颠倒了，所以只能靠名字比对抓。 */
+      const expPng = await evalJS('GNSS_VIEW.exp.CMP_FIELDS.map((f,k) =>' +
+        'GNSS_VIEW.exp.CMP_DIR + String(k+1).padStart(2,"0") + "_" + f.file + ".png")');
+      chk('10 张对比图的成员名与特征表逐一对应',
+          PNG_ENT.map(x => x.name).join('|') === expPng.join('|'),
+          PNG_ENT.map(x => x.name).join(' | '));
+      PNG_ENT.forEach(ent => {
+        chk('PNG 成员头部是 89 50 4E 47 0D 0A 1A 0A（PNG magic，看原始字节）',
+            ent.raw.length > 8 &&
+            ent.raw[0] === 0x89 && ent.raw[1] === 0x50 && ent.raw[2] === 0x4E &&
+            ent.raw[3] === 0x47, ent.name);
+        chk('PNG 成员没有 BOM 前缀（加了图就废了）',
+            !(ent.raw[0] === 0xEF && ent.raw[1] === 0xBB && ent.raw[2] === 0xBF), ent.name);
+        chk('PNG 成员按 STORE 存（IDAT 已是 DEFLATE，再压只会更大）',
+            ent.method === 0 && ent.csize === ent.usize, ent.name + ' method=' + ent.method);
+      });
+
+      /* 曲线数是本次改动的**要点**，直接对着规格断言，不靠看图。
+       * 折叠规则与 mode 编号无关，只看「这批里是不是只有**一条**轨迹」：
+       * 同一份文件选两次时 parseFile 的 PARSE_CACHE 会返回**同一个对象**，
+       * 所以那确实是同一条轨迹，姿态图就该只有一条。 */
+      const cs1 = await evalJS('(()=>{const s=GNSS_VIEW.exp.buildCompareSpecs(' +
+        'GNSS_VIEW.batch.slots[1].runs);return s.map(x=>x.series.length)})()');
+      chk('模式①（固定轨迹 × 多份星历）前 7 张图每份星历一条曲线',
+          JSON.stringify(cs1.slice(0, 7)) === JSON.stringify(new Array(7).fill(2)),
+          JSON.stringify(cs1));
+      chk('模式①的 Yaw/Pitch/Roll 只有一条曲线（姿态随轨迹，不随星历）',
+          JSON.stringify(cs1.slice(7)) === JSON.stringify([1, 1, 1]), JSON.stringify(cs1));
+
+      /* 模式②在 e2e 里选的是**同一份轨迹两次**（PARSE_CACHE 命中 -> 同一个对象），
+       * 所以只有一条轨迹，姿态图同样折叠成一条。要验「不同轨迹各画一条」，
+       * 就得给第 2 个任务换一个**不同**的 trace 对象（内容不变，只换身份）。 */
+      const cs2 = await evalJS('(()=>{const R=GNSS_VIEW.batch.slots[2].runs;' +
+        'const two=[R[0],Object.assign({},R[1],{trace:Object.create(R[1].trace)})];' +
+        'return GNSS_VIEW.exp.buildCompareSpecs(two).map(x=>x.series.length)})()');
+      chk('模式② 两条不同轨迹时 10 张图都是每条轨迹一条曲线',
+          JSON.stringify(cs2) === JSON.stringify(new Array(10).fill(2)), JSON.stringify(cs2));
+      const cs2same = await evalJS('(()=>{const s=GNSS_VIEW.exp.buildCompareSpecs(' +
+        'GNSS_VIEW.batch.slots[2].runs);return s.map(x=>x.series.length)})()');
+      chk('模式② 同一份轨迹选两次（缓存命中 = 同一个对象）时姿态图折叠成一条',
+          JSON.stringify(cs2same.slice(7)) === JSON.stringify([1, 1, 1]),
+          JSON.stringify(cs2same));
+      /* 横轴统一取轨迹文件的 Time 列：流水线里 Time 一律是「相对 t0 的秒」，
+       * 模式②再加个 t0 只是加了个批内常量。所以两个模式的横轴都该逐点等于
+       * 轨迹自己的 Time，且**互为同一份引用**（没有再复制一份数组）。 */
+      const ax = await evalJS('(()=>{const out={};' +
+        '[1,2].forEach(m=>{const R=GNSS_VIEW.batch.slots[m].runs;' +
+        'const s=GNSS_VIEW.exp.buildCompareSpecs(R)[0];' +
+        'out["m"+m]={same:R[0].trace.data.Time===s.series[0].x,' +
+        'first:s.series[0].x[0],last:s.series[0].x[s.series[0].x.length-1]};});' +
+        'return out})()');
+      chk('横轴就是轨迹文件的 Time 列（两种模式都不再换算成 UTC）',
+          ax.m1.same && ax.m2.same && ax.m1.first === 0 && ax.m2.first === 0, JSON.stringify(ax));
+      /* 刻度照原值印秒，不能走 fmtT 的 h:mm:ss：4999 得印成 4999 而不是 1:23:20。
+       * 混用 fmtT 会让人以为源文件 Time 列存的是时分秒，回查时对不上。 */
+      chk('横轴刻度照原值印秒（4999 -> 4999，不是 1:23:20）',
+          await evalJS('[0,1,500,1000,4999,5000].map(GNSS_VIEW.exp.fmtSec).join("|")') ===
+          '0|1|500|1000|4999|5000');
+      chk('非整数 Time 保留小数（否则两个刻度会印成同一个数）',
+          await evalJS('GNSS_VIEW.exp.fmtSec(16.5)+"|"+GNSS_VIEW.exp.fmtSec(1000.0)') ===
+          '16.50|1000');
+      chk('单任务图的 h:mm:ss 口径没被顺手改掉（两处格式各司其职）',
+          await evalJS('GNSS_VIEW.exp.fmtT(4999)') === '1:23:19');
+
+      ENT.length = 0; ENT.push(...CSV_ENT);   // 以下断言全部只针对 csv 成员
       if (ENT.length === 2) {
         /* 此刻是模式②：固定星历、多条轨迹，且两份轨迹是**同一个文件**选了两次 ——
          * 两者主干完全相同，正是序号唯一性的天然测试。

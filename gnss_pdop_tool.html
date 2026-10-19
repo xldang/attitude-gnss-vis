@@ -565,10 +565,13 @@ Yaw 画的是轨迹 CSV 里的**原样罗盘方位角**。它跨 ±180° / 0° �
           <div class="bnote" id="bNote"></div>
           <div class="row" style="margin-top:10px">
             <button id="bExpZip" class="primary">分任务导出 ZIP</button>
-            <span class="q" tabindex="0" data-t="每个任务一个 csv，打包成一个 zip 下载。
-解压后每个文件对应一个任务，命名 A_on_B_mask掩角_NN.csv：
+            <span class="q" tabindex="0" data-t="每个任务一个 csv，外加 10 张特征横向对比图，打包成一个 zip 下载。
+解压后每个 csv 对应一个任务，命名 A_on_B_mask掩角_NN.csv：
 A 是固定侧输入，B 是这个任务的输入，NN 是序号（补零到同宽，100 项就是 _001…_100）。
 文件名带掩角，所以换个掩角重导会另存一份而不会覆盖。
+「对比图/」子目录里是 10 张 png（Visible_Count、PDOP、5 项精度、Yaw/Pitch/Roll），
+每张把整批任务画在同一张图上，图例在图内。
+模式①（固定轨迹 × 多份星历）的姿态图只有一条曲线 —— 姿态是轨迹自带的，换星历不改变它。
 之所以打包而不是逐份下载：上百个任务就是上百次下载，浏览器会从第二次起就拦。">?</span>
             <button id="bExpRuns">导出逐历元 CSV（合并全表）</button>
             <button id="bExpSum">导出汇总 CSV</button>
@@ -2700,10 +2703,24 @@ A 是固定侧输入，B 是这个任务的输入，NN 是序号（补零到同�
     return out;
   }
 
+  /* 轨迹 Time 列的刻度格式：**照原值打印秒**，不转 h:mm:ss。
+   * fmtT 是单任务图的「已过时长」口径，4999 印成 1:23:19 —— 那是给人读的，
+   * 可横轴要对的是轨迹文件里 Time 那一列本身：0、1000、4999。刻度写成 16:40 会
+   * 让人以为 Time 列存的是时分秒，回查源文件时对不上。
+   * 非整数步长（Time 有小数）保留两位，免得整数取整把两个刻度印成同一个数。 */
+  function fmtSec(s) {
+    return Math.abs(s - Math.round(s)) < 1e-9 ? String(Math.round(s)) : s.toFixed(2);
+  }
+
   function fmtT(s) {
     const neg = s < 0, a = Math.abs(Math.round(s));
     const hh = Math.floor(a / 3600), mm = Math.floor(a % 3600 / 60), ss = a % 60;
-    return (neg ? '-' : '') + (hh ? hh + ':' + pad(mm) : '') + (hh ? pad(ss) : mm + ':' + pad(ss));
+    /* 分与秒之间的冒号在「有时」那条支路上漏了：
+     *   (hh ? hh+':'+pad(mm) : '') + (hh ? pad(ss) : mm+':'+pad(ss))
+     * 时分 ≥1 时拼出来的是 "1:" + "23" + "19" = "1:2319"，分和秒粘成一坨。
+     * 轨迹超过 1 小时才露得出来（本样本 4999 s = 1:23:19），而这正是常见长度。 */
+    return (neg ? '-' : '') +
+           (hh ? hh + ':' + pad(mm) + ':' + pad(ss) : mm + ':' + pad(ss));
   }
 
   /* 抽稀：每像素列取 (首, 最小, 最大, 末) —— 保住尖峰又不锯齿。
@@ -4182,30 +4199,26 @@ A 是固定侧输入，B 是这个任务的输入，NN 是序号（补零到同�
     else drawDist(cv);
   }
 
-  /* 多序列折线。X 来自每条 run 的 grid（模式 1 是相对秒，模式 2 是绝对 UTC 秒）。
+  /* 多序列折线。X = 轨迹文件里的 Time 列，**两个模式同一条轴**。
    * Y 有两种口径：绝对值看得见真实量级，Δ 看得见相对基准的差异 ——
    * 两者都需要，因为 Δ 图里基准自己恒为 0（一条贴地的直线），只有绝对值图
    * 能告诉你「这个 Δ 是从多少降下来的」。 */
   function drawDelta(cv) {
     const base = B.runs[B.baseline];
-    const abs = B.mode === 2;                       // 模式 2 用绝对时刻作横轴
     const asDelta = B.delta;
     const series = B.runs.map((r, i) => {
-      const T = r.trace.data.Time;
-      const x = new Float64Array(r.nEp);
-      for (let e = 0; e < r.nEp; e++) x[e] = abs ? r.t0Gps + T[e] : T[e];
       const y = new Float64Array(r.nEp);
       // Δ 口径下基准自己也是 0 —— 与其余曲线同口径，不能给基准开特例画绝对值
       for (let e = 0; e < r.nEp; e++) {
         y[e] = asDelta ? r.counts[e] - base.counts[e] : r.counts[e];
       }
-      return { name: r.name, x, y, color: colorOf(i),
+      return { name: r.name, x: r.trace.data.Time, y, color: colorOf(i),
                base: i === B.baseline, width: i === B.baseline ? 2.4 : 1.2 };
     });
     plotLines(cv, series, {
-      xLabel: abs ? '绝对时刻（UTC）' : '相对起始时刻（s）',
+      xLabel: '轨迹 Time（s）',
       yLabel: asDelta ? 'Δ 可视卫星数（相对基准）' : '可视卫星数',
-      xFmt: abs ? (v => fmtUtc(v)) : (v => fmtT(v)),
+      xFmt: fmtSec,
       yFmt: yFmtFor(extent(series, 'y'), asDelta),
       baseIdx: B.baseline
     });
@@ -4271,13 +4284,33 @@ A 是固定侧输入，B 是这个任务的输入，NN 是序号（补零到同�
     return v => (signed && v > 0 ? '+' : '') + v.toFixed(dec);
   }
 
-  function plotFrame(cv, series, opt, xl, yl) {
-    const { g, w, h } = setup2(cv);
-    const L = 58, R = 14, Tp = 10, Bm = 40;
+  /* opt.w / opt.h / opt.title / opt.legend 只给导出用的离屏图：活页上的三张对比图
+   * 一个都不传，所以那三条调用路径的行为与从前逐像素一致。
+   *   title —— 顶部加一条 30 px 的带，居中画在绘图区上方。居中不会撞上 yLabel
+   *            （后者锚在 x = L，靠左）。
+   *   legend —— 底部加一条图例带，xLabel 相应上移让位。**必须画在图里**：活页上
+   *            图例是 canvas 外的 HTML 元素，PNG 出了浏览器就没了，几十条重叠
+   *            曲线没有图例等于一堆色块。
+   *
+   * xr / yr 是 {lo, hi, ticks, fmt} —— 值域→像素的映射在这里**算一次**并随 F
+   * 返回给调用方。此前 plotLines 拿到 F 之后又按 cv.clientWidth 重算了一遍横轴，
+   * 和这里的 F.L/F.pw 各算各的：离屏 canvas 的 clientWidth 恒为 0，映射出负数，
+   * 刻度与曲线一起跑出画布。 */
+  function plotFrame(cv, series, opt, xr, yr) {
+    const { g, w, h } = setup2(cv, opt.w, opt.h);
+    const leg = opt.legend;
+    const cols = leg ? Math.max(1, Math.min(leg.length, leg.length <= 6 ? leg.length : 4)) : 0;
+    const legH = leg ? Math.ceil(leg.length / cols) * 16 + 10 : 0;
+    const L = 58, R = 14, Tp = opt.title ? 30 : 10, Bm = 40 + legH;
     const pw = w - L - R, ph = h - Tp - Bm;
+    const xl = { lo: xr.lo, hi: xr.hi, ticks: xr.ticks, fmt: xr.fmt,
+                 map: v => L + (v - xr.lo) / (xr.hi - xr.lo) * pw };
+    const yl = { lo: yr.lo, hi: yr.hi, ticks: yr.ticks, fmt: yr.fmt,
+                 map: v => Tp + (1 - (v - yr.lo) / (yr.hi - yr.lo)) * ph };
+    const ff = getComputedStyle(document.body).fontFamily;
     g.clearRect(0, 0, w, h);
     g.strokeStyle = '#e5e7eb'; g.lineWidth = 1;
-    g.fillStyle = '#6b7280'; g.font = '10px ' + getComputedStyle(document.body).fontFamily;
+    g.fillStyle = '#6b7280'; g.font = '10px ' + ff;
     g.textAlign = 'right'; g.textBaseline = 'middle';
     for (const v of yl.ticks) {
       const y = Math.round(yl.map(v)) + 0.5;
@@ -4293,16 +4326,33 @@ A 是固定侧输入，B 是这个任务的输入，NN 是序号（补零到同�
     g.strokeStyle = '#9ca3af';
     g.beginPath(); g.moveTo(L + 0.5, Tp); g.lineTo(L + 0.5, Tp + ph); g.lineTo(L + pw, Tp + ph); g.stroke();
     // 轴标题
-    g.fillStyle = '#6b7280'; g.font = '10.5px ' + getComputedStyle(document.body).fontFamily;
+    g.fillStyle = '#6b7280'; g.font = '10.5px ' + ff;
     g.fillText(opt.yLabel, L, 2);
     g.textAlign = 'right';
-    g.fillText(opt.xLabel, L + pw, h - 12);
-    return { g, L, Tp, pw, ph };
+    g.fillText(opt.xLabel, L + pw, h - 12 - legH);
+    if (opt.title) {
+      g.font = '12px ' + ff; g.fillStyle = '#111827'; g.textAlign = 'center';
+      g.fillText(opt.title, L + pw / 2, 8);
+    }
+    if (leg) {
+      const cw = pw / cols, y0 = h - legH + 12;
+      g.font = '10px ' + ff; g.textBaseline = 'middle'; g.textAlign = 'left';
+      leg.forEach((it, i) => {
+        const cx = L + (i % cols) * cw, cy = y0 + Math.floor(i / cols) * 16;
+        g.strokeStyle = it.color; g.lineWidth = 2;
+        g.beginPath(); g.moveTo(cx, cy); g.lineTo(cx + 14, cy); g.stroke();
+        g.fillStyle = '#374151';
+        // 每列宽度固定，名字过长会直接挤进下一列 —— 按列宽截断
+        g.fillText(cut(it.text, Math.max(4, Math.floor((cw - 22) / 6))), cx + 20, cy);
+      });
+    }
+    return { g, L, Tp, pw, ph, xl, yl };
   }
 
-  function setup2(cv) {
+  function setup2(cv, wOpt, hOpt) {
     const dpr = window.devicePixelRatio || 1;
-    const w = cv.clientWidth || 800, h = CHART_H.b1;
+    // wOpt/hOpt 存在时**不读 clientWidth**：离屏 canvas 从未入 DOM，clientWidth 恒为 0
+    const w = wOpt || cv.clientWidth || 800, h = hOpt || CHART_H.b1;
     const W = Math.round(w * dpr), H = Math.round(h * dpr);
     if (cv.width !== W || cv.height !== H) { cv.width = W; cv.height = H; }
     cv.style.height = h + 'px';
@@ -4326,23 +4376,17 @@ A 是固定侧输入，B 是这个任务的输入，NN 是序号（补零到同�
 
   function plotLines(cv, series, opt) {
     const [xlo, xhi] = extent(series, 'x'), [ylo, yhi] = extent(series, 'y');
-    const xt = niceTicks(xlo, xhi, 6), yt = niceTicks(ylo, yhi, 5);
-    const F = plotFrame(cv, series, opt, {
-      lo: xlo, hi: xhi, ticks: xt, fmt: opt.xFmt,
-      map: v => 58 + (v - xlo) / (xhi - xlo) * (cv.clientWidth - 72)
-    }, {
-      lo: ylo, hi: yhi, ticks: yt, fmt: opt.yFmt,
-      map: v => 10 + (1 - (v - ylo) / (yhi - ylo)) * (CHART_H.b1 - 50)
-    });
+    const F = plotFrame(cv, series, opt,
+      { lo: xlo, hi: xhi, ticks: niceTicks(xlo, xhi, 6), fmt: opt.xFmt },
+      { lo: ylo, hi: yhi, ticks: niceTicks(ylo, yhi, 5), fmt: opt.yFmt });
     series.forEach(s => {
       F.g.strokeStyle = s.color; F.g.lineWidth = s.width;
-      F.g.globalAlpha = s.base ? 1 : 0.72;
+      F.g.globalAlpha = s.base ? 1 : (opt.alpha === undefined ? 0.72 : opt.alpha);
       F.g.beginPath();
       let pen = false;
       for (let i = 0; i < s.x.length; i++) {
         if (!isFinite(s.y[i])) { pen = false; continue; }
-        const X = F.L + (s.x[i] - xlo) / (xhi - xlo) * F.pw;
-        const Y = F.Tp + (1 - (s.y[i] - ylo) / (yhi - ylo)) * F.ph;
+        const X = F.xl.map(s.x[i]), Y = F.yl.map(s.y[i]);
         if (pen) F.g.lineTo(X, Y); else { F.g.moveTo(X, Y); pen = true; }
       }
       F.g.stroke();
@@ -4352,20 +4396,15 @@ A 是固定侧输入，B 是这个任务的输入，NN 是序号（补零到同�
 
   function plotScatter(cv, series, opt) {
     const [xlo, xhi] = extent(series, 'x'), [ylo, yhi] = extent(series, 'y');
-    const xt = niceTicks(xlo, xhi, 6), yt = niceTicks(ylo, yhi, 5);
-    const F = plotFrame(cv, series, opt, {
-      lo: xlo, hi: xhi, ticks: xt, fmt: opt.xFmt || (v => String(Math.round(v))),
-      map: v => 58 + (v - xlo) / (xhi - xlo) * (cv.clientWidth - 72)
-    }, {
-      lo: ylo, hi: yhi, ticks: yt, fmt: opt.yFmt,
-      map: v => 10 + (1 - (v - ylo) / (yhi - ylo)) * (CHART_H.b1 - 50)
-    });
+    const F = plotFrame(cv, series, opt,
+      { lo: xlo, hi: xhi, ticks: niceTicks(xlo, xhi, 6),
+        fmt: opt.xFmt || (v => String(Math.round(v))) },
+      { lo: ylo, hi: yhi, ticks: niceTicks(ylo, yhi, 5), fmt: opt.yFmt });
     const s = series[0];
     F.g.fillStyle = s.color;
     for (let i = 0; i < s.x.length; i++) {
       if (!isFinite(s.x[i]) || !isFinite(s.y[i])) continue;
-      const X = F.L + (s.x[i] - xlo) / (xhi - xlo) * F.pw;
-      const Y = F.Tp + (1 - (s.y[i] - ylo) / (yhi - ylo)) * F.ph;
+      const X = F.xl.map(s.x[i]), Y = F.yl.map(s.y[i]);
       F.g.beginPath(); F.g.arc(X, Y, i === B.baseline ? 5 : 4, 0, 6.2832); F.g.fill();
       if (s.label) {
         F.g.fillStyle = '#6b7280'; F.g.font = '9.5px ' + getComputedStyle(document.body).fontFamily;
@@ -4376,7 +4415,6 @@ A 是固定侧输入，B 是这个任务的输入，NN 是序号（补零到同�
     }
   }
 
-  function fmtUtc(gpsSec) { return fmtDay(C.gpsSecToUTC(gpsSec, B.runs[0].rinex.header.leap)); }
   function fmtDay(d) { return d.y + '-' + p2(d.mo) + '-' + p2(d.d) + ' ' + p2(d.h) + ':' + p2(d.mi); }
   function cut(s, n) { s = String(s); return s.length > n ? s.slice(0, n - 1) + '…' : s; }
 
@@ -4481,8 +4519,10 @@ A 是固定侧输入，B 是这个任务的输入，NN 是序号（补零到同�
     await w.close();
     return read;
   }
-  /** entries: [{ name, text }] -> Promise<Blob>。text 里要自带 BOM（内容是中文，
-   *  Excel 少了 EF BB BF 会按 GBK 打开，而 Node 测试读 UTF-8 完全看不出问题）。 */
+  /** entries: [{ name, text }] 或 [{ name, bytes }] -> Promise<Blob>。
+   *  text 成员要自带 BOM（内容是中文，Excel 少了 EF BB BF 会按 GBK 打开，
+   *  而 Node 测试读 UTF-8 完全看不出问题）。
+   *  bytes 成员是已经压好的容器（PNG）：原样进包，既不编码也不重压。 */
   async function makeZip(entries) {
     if (entries.length > 65535) throw new Error('成员数超过 65535，请分批导出');
     const enc = new TextEncoder();
@@ -4495,10 +4535,13 @@ A 是固定侧输入，B 是这个任务的输入，NN 是序号（补零到同�
     for (const e of entries) {
       const nameU8 = enc.encode(e.name);   // 长度字段必须用**字节数**：'副本' 两个字
                                          // 是 2 个字符 6 个字节，写字符数会让中文名整个损坏
-      const raw = enc.encode(e.text);      // BOM 也在这份 raw 里，crc/尺寸都得算上它
+      // BOM 也在这份 raw 里，crc/尺寸都得算上它
+      const raw = e.bytes ? e.bytes : enc.encode(e.text);
       const crc = crc32(raw);               // CRC 算的是**未压缩**数据
       let method = 0, comp = raw;
-      if (canDeflate && raw.length > 64) {  // 64 字节以下 deflate 只会更大，比一下再说
+      /* PNG 的 IDAT 本身就是 DEFLATE，再压一遍只会变大 —— 所以 bytes 成员直接
+       * STORE，不去白跑一次 deflateRaw。 */
+      if (!e.bytes && canDeflate && raw.length > 64) {
         const d = await deflateRaw(raw);
         if (d.length < raw.length) { comp = d; method = 8; }
       }
@@ -4565,6 +4608,86 @@ A 是固定侧输入，B 是这个任务的输入，NN 是序号（补零到同�
     return C.epochCsvText(r.trace.data, r.nEp, r.counts, r.pdops, r.prn, r.acc);
   }
 
+  /* ---------- 横向对比图 ----------
+   * CSV 是数据、图是对照：一份 zip 里几十个成员，要看「谁高谁低」就得先拖进表格
+   * 软件。这里把每个特征在同一批任务上画进同一张 PNG，和结果视图的对比曲线同一
+   * 套 plotLines，所以屏幕上的结论和包里的图不会对不上。
+   *
+   * 10 张：7 个几何/精度产出物 + 3 个姿态。顺序即 file 里的两位序号前缀，解压后
+   * 按名字排序就是阅读顺序。
+   *
+   * src 必须是**函数**而不是字段名 —— counts/pdops 是 run 上的 Int32/Float64，
+   * 精度藏在 r.acc 的 keyed 数组里，姿态又挂在 r.trace.data 上，四种形状不统一，
+   * 写成 'acc.' + key 的字符串得再写一个分发器。 */
+  const CMP_DIR = '对比图/';
+  const CMP_W = 1000;                                       // 离屏画布宽（未入 DOM，无 clientWidth）
+  const CMP_FIELDS = [
+    { file: 'Visible_Count', label: '可视卫星数',   unit: '颗',  dec: 0, src: r => r.counts },
+    { file: 'PDOP',          label: 'PDOP',         unit: '',    dec: 2, src: r => r.pdops },
+    { file: 'PosAccH_m',     label: '水平定位精度', unit: 'm',   dec: 2, src: r => r.acc.sh },
+    { file: 'PosAccV_m',     label: '高程定位精度', unit: 'm',   dec: 2, src: r => r.acc.sv },
+    { file: 'VelAccE_mps',   label: '东向测速精度', unit: 'm/s', dec: 3, src: r => r.acc.sve },
+    { file: 'VelAccN_mps',   label: '北向测速精度', unit: 'm/s', dec: 3, src: r => r.acc.svn },
+    { file: 'VelAccD_mps',   label: '天向测速精度', unit: 'm/s', dec: 3, src: r => r.acc.svu },
+    { file: 'Yaw',           label: '航向角',       unit: '°',   dec: 1, src: r => r.trace.data.Yaw },
+    { file: 'Pitch',         label: '俯仰角',       unit: '°',   dec: 1, src: r => r.trace.data.Pitch },
+    { file: 'Roll',          label: '横滚角',       unit: '°',   dec: 1, src: r => r.trace.data.Roll }
+  ];
+
+  /** 批量结果 -> 10 张图的绘制规格。只算数据，不碰 canvas，便于直接断言。 */
+  function buildCompareSpecs(runs) {
+    /* 姿态图什么时候只画一条？当这批里**只有一条轨迹**的时候。
+     * 模式①「固定一条轨迹 × 多份星历」永远落在这个情形里：buildTasks 把同一个
+     * trace 对象塞给每个任务，姿态是轨迹自带的，跟换哪份星历毫无关系，画 N 条
+     * 完全重合的曲线只是噪声。
+     * 模式②通常有 N 条轨迹，就画 N 条；只有当几份轨迹其实是**同一条**时才折叠 ——
+     * 而「同一条」在这里是对象身份层面的事实：parseFile 的 PARSE_CACHE 按文件键
+     * 命中，同一份文件选两次返回的是**同一个对象**，两条任务的姿态逐点相同。
+     *
+     * 判据写成「是不是同一个 trace 对象」而不是 mode === 1：这条规则跟着**事实**
+     * 走，不依赖 mode 编号的含义，将来调换两个模式的定义也不会跟着错；而且它同时
+     * 正确处理了模式②选中同一份文件两次的情形，那本就该是一条曲线。
+     * 反过来不按**内容**去重：两条内容恰好相同的不同轨迹是用户有意选的两个任务，
+     * 图例里就该有两个名字。 */
+    const oneTrace = runs.every(r => r.trace === runs[0].trace);
+    return CMP_FIELDS.map((f, k) => {
+      const att = k >= 7;                       // 后 3 个是姿态
+      const pick = att && oneTrace ? runs.slice(0, 1) : runs;
+      const series = pick.map((r, i) =>
+        // 横轴直接取轨迹的 Time 列，不再按模式换算：流水线里 Time 一律是
+        // 「相对 t0 的秒」（buildLOSChunk 算的是 t0Gps + Time[e]），所以给模式②
+        // 加上 t0 只是给同一个数加了个批内常量，横坐标一模一样、标签却从秒变成
+        // UTC —— 白添一层。直接用 Time，两个模式也就共用一条轴。
+        ({ name: r.name, color: colorOf(i), width: 1.2,
+           x: r.trace.data.Time, y: f.src(r) }));
+      return { file: String(k + 1).padStart(2, '0') + '_' + f.file + '.png',
+               field: f, series };
+    });
+  }
+
+  /** 一张对比图 -> PNG 字节。走 toBlob 而不是 toDataURL：后者要 base64，
+   *  白涨 33% —— 10 张图就是几百 KB 的纯浪费。 */
+  async function renderComparePng(spec, mask) {
+    const f = spec.field, n = spec.series.length;
+    const legH = Math.ceil(n / (n <= 6 ? Math.max(1, n) : 4)) * 16 + 10;
+    const cv = document.createElement('canvas');
+    plotLines(cv, spec.series, {
+      // 图例带从绘图区高度里扣掉，所以加多少 legH，绘图区都还是 CHART_H.b1 那么多
+      w: CMP_W, h: CHART_H.b1 + legH,
+      title: f.label + '对比（掩角 ' + mask.toFixed(1) + '°）',
+      xLabel: '轨迹 Time（s）',
+      xFmt: fmtSec,
+      yLabel: f.label + (f.unit ? '（' + f.unit + '）' : ''),
+      yFmt: v => v.toFixed(f.dec),
+      // 曲线一多就糊成一片：不透明度随条数降档，宁可淡一点也不看不见
+      alpha: n <= 6 ? 0.85 : n <= 20 ? 0.6 : 0.35,
+      legend: spec.series.map(s => ({ color: s.color, text: s.name }))
+    });
+    const blob = await new Promise(r => cv.toBlob(r, 'image/png'));
+    if (!blob) throw new Error('画布编码失败：' + f.file);
+    return new Uint8Array(await blob.arrayBuffer());
+  }
+
   /* ---------- 分任务 ZIP ---------- */
   let packing = false;
   $('bExpZip').addEventListener('click', async () => {
@@ -4590,16 +4713,27 @@ A 是固定侧输入，B 是这个任务的输入，NN 是序号（补零到同�
         $('bProgText').textContent = '正在打包 ' + (i + 1) + '/' + n + '：' + entries[i].name;
         await new Promise(rq => setTimeout(rq, 0));         // 让出主线程，进度条才动得起来
       }
+      /* 对比图放在**子目录**：几十份 csv 与 10 张 png 平铺在一起时，文件管理器
+       * 里根本分不出哪些是图。这些成员名是固定 ASCII，没有用户输入混进去，
+       * 所以不过 safeName（它会吃掉路径分隔符，正是这里要用的）。 */
+      const specs = buildCompareSpecs(runs);
+      for (let k = 0; k < specs.length; k++) {
+        $('bProgText').textContent = '正在作图 ' + (k + 1) + '/' + specs.length + '：' +
+          specs[k].field.label;
+        entries.push({ name: CMP_DIR + specs[k].file,
+                       bytes: await renderComparePng(specs[k], mask) });
+        await new Promise(rq => setTimeout(rq, 0));         // toBlob 本身也让出主线程
+      }
       const blob = await makeZip(entries);
       // 故意不叫 batch_runs*：e2e 按 startsWith('batch_runs') 轮询合并表，
       // 同前缀会让那条断言把 zip 也捞进去。
       const zipName = 'batch_zip_mode' + mode + '_mask' + mask.toFixed(1) + '.zip';
       downloadBlob(zipName, blob);
-      $('bProgText').textContent = '已导出 ' + n + ' 份 CSV（每任务一份，掩角 ' +
-        mask.toFixed(1) + '°）→ ' + zipName + '（' +
+      $('bProgText').textContent = '已导出 ' + n + ' 份 CSV（每任务一份）+ ' +
+        specs.length + ' 张对比图（掩角 ' + mask.toFixed(1) + '°）→ ' + zipName + '（' +
         (blob.size < 1048576 ? Math.round(blob.size / 1024) + ' KB'
                              : (blob.size / 1048576).toFixed(1) + ' MB') + '）';
-      log('已打包 ' + n + ' 份逐历元 CSV → ' + zipName, 'g');
+      log('已打包 ' + n + ' 份逐历元 CSV + ' + specs.length + ' 张对比图 → ' + zipName, 'g');
     } catch (e) {
       $('bProgText').textContent = '打包失败：' + e.message;
       log('分任务导出失败：' + e.message, 'e');
@@ -4673,7 +4807,10 @@ A 是固定侧输入，B 是这个任务的输入，NN 是序号（补零到同�
                            exp: { safeName: C.safeName, fileStem: C.fileStem, taskCsvName: C.taskCsvName,
                                   makeZip, deflateRaw, downloadBlob, saveCsv, csvCell: C.csvCell,
                                   EXP_COLS: C.EXP_COLS, epochCsvText: C.epochCsvText,
-                                  prnLabels: C.prnLabels },
+                                  prnLabels: C.prnLabels,
+                                  // 对比图也开出来：让「打包坏了」与「曲线数算错了」
+                                  // （模式①姿态本该只有一条）能分成两个失败信号
+                                  CMP_FIELDS, CMP_DIR, buildCompareSpecs, fmtSec, fmtT },
                            batch: B, batchOpen: () => $('bBatch').click() };
 
   /* ---------------- 初始化 ---------------- */
